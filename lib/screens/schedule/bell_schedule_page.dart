@@ -7,6 +7,7 @@ import '../../widgets/app_drawer.dart';
 import '../../utils/helpers.dart';
 import '../../models/lesson_model.dart';
 import 'edit_lesson_page.dart';
+import '../profile/profile_page.dart';
 
 class BellSchedulePage extends StatefulWidget {
   final String place;
@@ -186,6 +187,10 @@ class _BellSchedulePageState extends State<BellSchedulePage> with SingleTickerPr
         ),
         backgroundColor: isDark ? const Color(0xFF1A1C2C) : Colors.amber.shade100,
         elevation: 3,
+        actions: [
+          _buildUserAvatar(context),  // ← ДОБАВЬ ЭТУ СТРОКУ
+          const SizedBox(width: 16),
+        ],
         bottom: sameEveryday
             ? null
             : PreferredSize(
@@ -256,7 +261,33 @@ class _BellSchedulePageState extends State<BellSchedulePage> with SingleTickerPr
       ),
     );
   }
+  Widget _buildUserAvatar(BuildContext context) {
+    final user = FirebaseAuth.instance.currentUser;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
 
+    return GestureDetector(
+      onTap: () {
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => ProfilePage()),
+        );
+      },
+      child: CircleAvatar(
+        radius: 18,
+        backgroundColor: isDark ? Colors.amber : Colors.amber.shade100,
+        child: user?.photoURL != null
+            ? CircleAvatar(
+          radius: 16,
+          backgroundImage: NetworkImage(user!.photoURL!),
+        )
+            : Icon(
+          Icons.person,
+          size: 20,
+          color: isDark ? Colors.black : Colors.amber.shade800,
+        ),
+      ),
+    );
+  }
   Widget _buildScheduleList(List<Lesson> lessons, [String? day]) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;

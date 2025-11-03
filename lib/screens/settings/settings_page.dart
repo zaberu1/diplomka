@@ -1,9 +1,11 @@
 // lib/screens/settings/settings_page.dart
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../../app/theme_controller.dart';
 import '../../widgets/app_drawer.dart';
 import '../setup/place_selection_page.dart';
+import '../profile/profile_page.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -48,6 +50,34 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
+  Widget _buildUserAvatar(BuildContext context) {
+    final user = FirebaseAuth.instance.currentUser;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return GestureDetector(
+      onTap: () {
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => ProfilePage()),
+        );
+      },
+      child: CircleAvatar(
+        radius: 18,
+        backgroundColor: isDark ? Colors.amber : Colors.amber.shade100,
+        child: user?.photoURL != null
+            ? CircleAvatar(
+          radius: 16,
+          backgroundImage: NetworkImage(user!.photoURL!),
+        )
+            : Icon(
+          Icons.person,
+          size: 20,
+          color: isDark ? Colors.black : Colors.amber.shade800,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -61,6 +91,10 @@ class _SettingsPageState extends State<SettingsPage> {
         foregroundColor: theme.appBarTheme.foregroundColor,
         elevation: 2,
         centerTitle: true,
+        actions: [
+          _buildUserAvatar(context),  // ← ДОБАВЛЕНА АВАТАРКА
+          const SizedBox(width: 16),
+        ],
       ),
       backgroundColor: theme.scaffoldBackgroundColor,
       body: Padding(
