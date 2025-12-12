@@ -2,9 +2,12 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+// Импортируем только нужные классы
 import '../screens/schedule/home_page.dart';
 import '../screens/schedule/bell_schedule_page.dart';
 import '../screens/settings/settings_page.dart';
+import '../screens/settings/history_page.dart';
 import '../screens/auth/auth_page.dart';
 
 class AppDrawer extends StatelessWidget {
@@ -90,6 +93,21 @@ class AppDrawer extends StatelessWidget {
                 Navigator.pushReplacement(
                   context,
                   MaterialPageRoute(builder: (_) => BellSchedulePage(place: place)),
+                );
+              }
+            },
+          ),
+          _buildMenuItem(
+            context,
+            icon: Icons.history,
+            label: 'История',
+            iconColor: iconColor,
+            textColor: textColor,
+            onTap: () {
+              if (context.mounted) {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const HistoryPage()),
                 );
               }
             },

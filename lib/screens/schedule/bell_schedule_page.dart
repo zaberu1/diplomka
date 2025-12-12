@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../widgets/app_drawer.dart';
 import '../../utils/helpers.dart';
 import '../../models/lesson_model.dart';
+import '../../services/history_service.dart';
 import 'edit_lesson_page.dart';
 import '../profile/profile_page.dart';
 
@@ -38,6 +39,12 @@ class _BellSchedulePageState extends State<BellSchedulePage> with SingleTickerPr
     super.initState();
     _tabController = TabController(length: days.length, vsync: this);
     _loadSettingsAndSchedule();
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadSettingsAndSchedule() async {
@@ -170,6 +177,97 @@ class _BellSchedulePageState extends State<BellSchedulePage> with SingleTickerPr
     });
   }
 
+  Future<void> _addLesson(Lesson newLesson, [String? day]) async {
+    setState(() {
+      if (sameEveryday) {
+        schedule.add(newLesson);
+        schedule.sort((a, b) => compareTime(a.start, b.start));
+      } else {
+        final currentDay = day ?? days[_tabController.index];
+        weeklySchedule[currentDay] ??= [];
+        weeklySchedule[currentDay]!.add(newLesson);
+        weeklySchedule[currentDay]!.sort((a, b) => compareTime(a.start, b.start));
+      }
+    });
+
+    // Добавляем запись в историю
+    await HistoryService.addHistoryEntry(
+      action: 'added',
+      lessonName: newLesson.name,
+      place: widget.place,
+    );
+
+    if (sameEveryday) {
+      await _saveSchedule();
+    } else {
+      await _saveWeeklySchedule();
+    }
+  }
+
+  Future<void> _editLesson(int index, Lesson updatedLesson, [String? day]) async {
+    final oldLesson = sameEveryday ? schedule[index] : weeklySchedule[day ?? days[_tabController.index]]![index];
+
+    setState(() {
+      if (sameEveryday) {
+        schedule[index] = updatedLesson;
+        schedule.sort((a, b) => compareTime(a.start, b.start));
+      } else {
+        weeklySchedule[day ?? days[_tabController.index]]![index] = updatedLesson;
+        weeklySchedule[day ?? days[_tabController.index]]!.sort((a, b) => compareTime(a.start, b.start));
+      }
+    });
+
+    // Добавляем запись в историю только если имя изменилось
+    if (oldLesson.name != updatedLesson.name) {
+      await HistoryService.addHistoryEntry(
+        action: 'edited',
+        lessonName: updatedLesson.name,
+        place: widget.place,
+      );
+    }
+
+    if (sameEveryday) {
+      await _saveSchedule();
+    } else {
+      await _saveWeeklySchedule();
+    }
+  }
+
+  Future<void> _deleteLesson(int index, [String? day]) async {
+    final lessonToDelete = sameEveryday ? schedule[index] : weeklySchedule[day ?? days[_tabController.index]]![index];
+
+    setState(() {
+      if (sameEveryday) {
+        schedule.removeAt(index);
+      } else {
+        weeklySchedule[day ?? days[_tabController.index]]!.removeAt(index);
+      }
+    });
+
+    // Добавляем запись в историю
+    await HistoryService.addHistoryEntry(
+      action: 'deleted',
+      lessonName: lessonToDelete.name,
+      place: widget.place,
+    );
+
+    if (sameEveryday) {
+      await _saveSchedule();
+    } else {
+      await _saveWeeklySchedule();
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Пара "${lessonToDelete.name}" удалена'),
+          backgroundColor: Colors.redAccent,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -188,7 +286,7 @@ class _BellSchedulePageState extends State<BellSchedulePage> with SingleTickerPr
         backgroundColor: isDark ? const Color(0xFF1A1C2C) : Colors.amber.shade100,
         elevation: 3,
         actions: [
-          _buildUserAvatar(context),  // ← ДОБАВЬ ЭТУ СТРОКУ
+          _buildUserAvatar(context),
           const SizedBox(width: 16),
         ],
         bottom: sameEveryday
@@ -228,22 +326,7 @@ class _BellSchedulePageState extends State<BellSchedulePage> with SingleTickerPr
             ),
           );
           if (newLesson != null && mounted) {
-            setState(() {
-              if (sameEveryday) {
-                schedule.add(newLesson);
-                schedule.sort((a, b) => compareTime(a.start, b.start));
-              } else {
-                final day = days[_tabController.index];
-                weeklySchedule[day] ??= [];
-                weeklySchedule[day]!.add(newLesson);
-                weeklySchedule[day]!.sort((a, b) => compareTime(a.start, b.start));
-              }
-            });
-            if (sameEveryday) {
-              await _saveSchedule();
-            } else {
-              await _saveWeeklySchedule();
-            }
+            await _addLesson(newLesson);
           }
         },
         icon: const Icon(Icons.add, color: Colors.black),
@@ -261,6 +344,7 @@ class _BellSchedulePageState extends State<BellSchedulePage> with SingleTickerPr
       ),
     );
   }
+
   Widget _buildUserAvatar(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -269,7 +353,7 @@ class _BellSchedulePageState extends State<BellSchedulePage> with SingleTickerPr
       onTap: () {
         Navigator.push(
           context,
-          MaterialPageRoute(builder: (_) => ProfilePage()),
+          MaterialPageRoute(builder: (_) => const ProfilePage()),
         );
       },
       child: CircleAvatar(
@@ -288,9 +372,40 @@ class _BellSchedulePageState extends State<BellSchedulePage> with SingleTickerPr
       ),
     );
   }
+
   Widget _buildScheduleList(List<Lesson> lessons, [String? day]) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
+
+    if (lessons.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.schedule,
+              size: 80,
+              color: isDark ? Colors.white38 : Colors.black38,
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Расписание пусто',
+              style: TextStyle(
+                fontSize: 18,
+                color: isDark ? Colors.white60 : Colors.black54,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Нажмите + чтобы добавить пару',
+              style: TextStyle(
+                color: isDark ? Colors.white38 : Colors.black38,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
 
     return Container(
       color: theme.scaffoldBackgroundColor,
@@ -310,15 +425,30 @@ class _BellSchedulePageState extends State<BellSchedulePage> with SingleTickerPr
               child: const Icon(Icons.delete, color: Colors.white),
             ),
             direction: DismissDirection.endToStart,
-            onDismissed: (_) async {
-              if (day != null) {
-                setState(() => weeklySchedule[day]!.removeAt(index));
-                await _saveWeeklySchedule();
-              } else {
-                setState(() => schedule.removeAt(index));
-                await _saveSchedule();
-              }
+            confirmDismiss: (_) async {
+              final result = await showDialog<bool>(
+                context: context,
+                builder: (context) => AlertDialog(
+                  title: const Text('Удалить пару?'),
+                  content: Text('Вы уверены, что хотите удалить пару "${lesson.name}"?'),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.of(context).pop(false),
+                      child: const Text('Отмена'),
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.of(context).pop(true),
+                      style: TextButton.styleFrom(
+                        backgroundColor: Colors.redAccent,
+                      ),
+                      child: const Text('Удалить', style: TextStyle(color: Colors.white)),
+                    ),
+                  ],
+                ),
+              );
+              return result ?? false;
             },
+            onDismissed: (_) => _deleteLesson(index, day),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: Card(
@@ -369,20 +499,7 @@ class _BellSchedulePageState extends State<BellSchedulePage> with SingleTickerPr
                       );
 
                       if (updated != null && mounted) {
-                        setState(() {
-                          if (day != null) {
-                            weeklySchedule[day]![index] = updated;
-                            weeklySchedule[day]!.sort((a, b) => compareTime(a.start, b.start));
-                          } else {
-                            schedule[index] = updated;
-                            schedule.sort((a, b) => compareTime(a.start, b.start));
-                          }
-                        });
-                        if (day != null) {
-                          await _saveWeeklySchedule();
-                        } else {
-                          await _saveSchedule();
-                        }
+                        await _editLesson(index, updated, day);
                       }
                     },
                   ),

@@ -15,12 +15,16 @@ dependencies:
   cupertino_icons: ^1.0.8
   shared_preferences: ^2.2.3
   intl: ^0.20.2
-  shimmer: ^3.0.0      # <-- добавлено
+  shimmer: ^3.0.0
 
   # Firebase пакеты
   firebase_core: ^4.1.1
   firebase_auth: ^6.1.0
   cloud_firestore: ^6.0.2
+  firebase_storage: ^13.0.3 # ← ПРАВИЛЬНОЕ МЕСТО
+
+  # Image Picker
+  image_picker: ^1.0.4  # ← ПРАВИЛЬНОЕ МЕСТО
 
 dev_dependencies:
   flutter_test:

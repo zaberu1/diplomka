@@ -3,6 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../widgets/app_drawer.dart';
+import '../settings/settings_page.dart';
+import 'edit_profile_page.dart';
+
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -130,42 +133,24 @@ class _ProfilePageState extends State<ProfilePage> {
                     icon: Icons.edit,
                     text: 'Редактировать профиль',
                     onTap: () {
-                      showDialog(
-                        context: context,
-                        builder: (context) => AlertDialog(
-                          title: Text('Редактирование профиля'),
-                          content: Text('Функция в разработке'),
-                          actions: [
-                            TextButton(
-                              onPressed: () => Navigator.pop(context),
-                              child: Text('OK'),
-                            ),
-                          ],
-                        ),
-                      );
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const EditProfilePage()),
+                      ).then((updated) {
+                        if (updated == true) {
+                          _loadUserData(); // Обновляем данные если профиль был изменен
+                        }
+                      });
                     },
                   ),
                   _buildProfileButton(
                     icon: Icons.settings,
                     text: 'Настройки',
                     onTap: () {
-                      Navigator.pushNamed(context, '/settings');
+                      Navigator.pushNamed(context, '/settings');  // ← ИСПРАВЬ НА '/settings'
                     },
                   ),
-                  _buildProfileButton(
-                    icon: Icons.history,
-                    text: 'История изменений',
-                    onTap: () {
-                      Navigator.pushNamed(context, '/history');
-                    },
-                  ),
-                  _buildProfileButton(
-                    icon: Icons.analytics,
-                    text: 'Статистика',
-                    onTap: () {
-                      Navigator.pushNamed(context, '/statistics');
-                    },
-                  ),
+
                   _buildProfileButton(
                     icon: Icons.exit_to_app,
                     text: 'Выйти',
