@@ -135,7 +135,10 @@ class WelcomePage extends StatelessWidget {
                     child: ElevatedButton(
                       onPressed: () async {
                         await _completeWelcome();
-                        if (context.mounted) Navigator.pushReplacementNamed(context, '/auth');
+                        if (context.mounted) {
+                          // Теперь ведет на авторизацию
+                          Navigator.pushReplacementNamed(context, '/auth');
+                        }
                       },
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.amber,

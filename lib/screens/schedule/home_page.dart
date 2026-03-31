@@ -343,6 +343,37 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     }
   }
 
+  // --- Виджет объявления от админа ---
+  Widget _buildSystemAnnouncement() {
+    return StreamBuilder<DocumentSnapshot>(
+      stream: FirebaseFirestore.instance.collection('system').doc('announcement').snapshots(),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) return const SizedBox.shrink();
+        final data = snapshot.data!.data() as Map<String, dynamic>?;
+        if (data == null || data['active'] == false) return const SizedBox.shrink();
+
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 20),
+          child: _buildGlassCard(
+            opacity: 0.1,
+            child: Row(
+              children: [
+                const Icon(Icons.campaign_rounded, color: Colors.amber, size: 28),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Text(
+                    data['text'] ?? '',
+                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -410,6 +441,10 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                         ],
                       ),
                       const SizedBox(height: 20),
+                      
+                      // ВСТАВКА ОБЪЯВЛЕНИЯ
+                      _buildSystemAnnouncement(),
+
                       _buildSummaryRow(),
                       const SizedBox(height: 30),
                       Text(_formatTime(TimeOfDay.now()), style: const TextStyle(fontSize: 72, fontWeight: FontWeight.w200, letterSpacing: -2)),

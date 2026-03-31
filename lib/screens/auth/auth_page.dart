@@ -3,9 +3,15 @@ import 'package:flutter/material.dart';
 import 'dart:ui';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../services/auth_service.dart';
 import '../setup/place_selection_page.dart';
 import '../onboarding/welcome_page.dart';
+import '../admin/admin_dashboard.dart';
+import '../teacher/teacher_dashboard.dart';
+import '../schedule/home_page.dart';
+import '../setup/app_mode_selection_page.dart';
+import '../setup/coming_soon_page.dart';
 
 class AuthPage extends StatefulWidget {
   const AuthPage({super.key});
@@ -24,7 +30,8 @@ class _AuthPageState extends State<AuthPage> {
   bool _obscurePassword = true;
 
   Future<void> _auth() async {
-    if (_emailController.text.isEmpty || _passwordController.text.isEmpty) {
+    final email = _emailController.text.trim();
+    if (email.isEmpty || _passwordController.text.isEmpty) {
       _showError('Заполните все поля');
       return;
     }
@@ -37,15 +44,67 @@ class _AuthPageState extends State<AuthPage> {
     try {
       User? user;
       if (isLogin) {
-        user = await _authService.signIn(_emailController.text, _passwordController.text);
+        user = await _authService.signIn(email, _passwordController.text);
       } else {
-        user = await _authService.signUp(_emailController.text, _passwordController.text);
+        user = await _authService.signUp(email, _passwordController.text);
+        
+        if (user != null) {
+          await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+            'email': email,
+            'role': email == 'admin@zvonok.ru' ? 'admin' : 'student',
+            'createdAt': FieldValue.serverTimestamp(),
+            'setupCompleted': false,
+          });
+        }
       }
 
       if (user != null && mounted) {
+        final userDoc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
+        final userData = userDoc.data();
+        final role = userData?['role'] ?? 'student';
+
         final prefs = await SharedPreferences.getInstance();
         await prefs.setBool('remember_me', true);
-        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const PlaceSelectionPage()));
+
+        if (mounted) {
+          if (role == 'admin') {
+            Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const AdminDashboard()));
+          } else if (role == 'teacher') {
+            Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const TeacherDashboard()));
+          } else {
+            // ДЛЯ СТУДЕНТА: Проверка завершенности настройки через Firestore
+            final bool setupCompleted = userData?['setupCompleted'] ?? false;
+            final String? mode = userData?['appMode'];
+            final String? place = userData?['institutionId'];
+            final bool? sameSchedule = userData?['sameSchedule'];
+
+            // Синхронизируем данные из облака в локальные настройки
+            if (mode != null) await prefs.setString('app_operating_mode', mode);
+            if (place != null) await prefs.setString('selected_place', place);
+            if (sameSchedule != null) await prefs.setBool('same_schedule', sameSchedule);
+
+            if (!setupCompleted) {
+              // Если настройка не завершена, определяем на каком этапе остановились
+              if (mode == null) {
+                Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const AppModeSelectionPage()));
+              } else if (place == null) {
+                if (mode == 'manual') {
+                  Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const PlaceSelectionPage()));
+                } else {
+                  Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const ComingSoonPage()));
+                }
+              } else {
+                // Если режим и место есть, но setupCompleted еще false (например, не выбрали тип расписания)
+                // Можно отправить на страницу выбора типа расписания (ScheduleModeSelectionPage)
+                // Но для надежности проверим, есть ли импорт или просто перейдем к началу цепочки
+                Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const AppModeSelectionPage()));
+              }
+            } else {
+              // Всё настроено в облаке — идем на главную
+              Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomePage(place: place ?? 'school')));
+            }
+          }
+        }
       }
     } on FirebaseAuthException catch (e) {
       _showError(_getFirebaseErrorMessage(e.code));
@@ -61,8 +120,6 @@ class _AuthPageState extends State<AuthPage> {
       case 'user-not-found': return 'Пользователь не найден';
       case 'wrong-password': return 'Неверный пароль';
       case 'email-already-in-use': return 'Email уже занят';
-      case 'invalid-email': return 'Неверный формат email';
-      case 'weak-password': return 'Слишком слабый пароль';
       default: return 'Ошибка аутентификации';
     }
   }
@@ -135,9 +192,18 @@ class _AuthPageState extends State<AuthPage> {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Scaffold(
+      extendBodyBehindAppBar: true,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.info_outline, color: Colors.white70),
+          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const WelcomePage())),
+          tooltip: 'О приложении',
+        ),
+      ),
       body: Stack(
         children: [
-          // Фон
           Container(
             decoration: BoxDecoration(
               gradient: LinearGradient(
@@ -149,22 +215,6 @@ class _AuthPageState extends State<AuthPage> {
               ),
             ),
           ),
-          // Сферы
-          Positioned(
-            top: 100, right: -50,
-            child: ImageFiltered(
-              imageFilter: ImageFilter.blur(sigmaX: 60, sigmaY: 60),
-              child: Container(width: 200, height: 200, decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.amber.withOpacity(0.15))),
-            ),
-          ),
-          Positioned(
-            bottom: 50, left: -50,
-            child: ImageFiltered(
-              imageFilter: ImageFilter.blur(sigmaX: 80, sigmaY: 80),
-              child: Container(width: 250, height: 250, decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.blue.withOpacity(0.1))),
-            ),
-          ),
-          
           SafeArea(
             child: Center(
               child: SingleChildScrollView(
@@ -173,7 +223,6 @@ class _AuthPageState extends State<AuthPage> {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    // Лого
                     Hero(
                       tag: 'logo',
                       child: Container(
@@ -188,10 +237,7 @@ class _AuthPageState extends State<AuthPage> {
                     ),
                     const SizedBox(height: 16),
                     const Text('ZvonOK', style: TextStyle(fontSize: 32, fontWeight: FontWeight.w900, letterSpacing: 2)),
-                    const Text('Твой умный график звонков', style: TextStyle(fontSize: 14, color: Colors.white54)),
                     const SizedBox(height: 40),
-
-                    // Карточка формы
                     _buildGlassCard(
                       child: Column(
                         children: [
@@ -200,7 +246,6 @@ class _AuthPageState extends State<AuthPage> {
                           _buildTextField(label: 'Email', controller: _emailController, icon: Icons.email_outlined, keyboardType: TextInputType.emailAddress),
                           _buildTextField(label: 'Пароль', controller: _passwordController, icon: Icons.lock_outline_rounded, obscureText: _obscurePassword, onToggle: () => setState(() => _obscurePassword = !_obscurePassword)),
                           if (!isLogin) _buildTextField(label: 'Подтвердите пароль', controller: _confirmPasswordController, icon: Icons.lock_reset_rounded, obscureText: _obscurePassword),
-                          
                           const SizedBox(height: 12),
                           SizedBox(
                             width: double.infinity,
@@ -221,7 +266,6 @@ class _AuthPageState extends State<AuthPage> {
                         ],
                       ),
                     ),
-                    
                     const SizedBox(height: 24),
                     TextButton(
                       onPressed: () => setState(() => isLogin = !isLogin),
@@ -229,14 +273,6 @@ class _AuthPageState extends State<AuthPage> {
                         isLogin ? 'Нет аккаунта? Зарегистрироваться' : 'Уже есть аккаунт? Войти',
                         style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.w600),
                       ),
-                    ),
-                    
-                    const SizedBox(height: 40),
-                    TextButton.icon(
-                      onPressed: () => Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const WelcomePage())),
-                      icon: const Icon(Icons.info_outline, size: 18),
-                      label: const Text('О приложении'),
-                      style: TextButton.styleFrom(foregroundColor: Colors.white38),
                     ),
                   ],
                 ),

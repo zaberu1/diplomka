@@ -1,38 +1,37 @@
-// lib/screens/setup/schedule_mode_selection_page.dart
+// lib/screens/setup/app_mode_selection_page.dart
 import 'package:flutter/material.dart';
 import 'dart:ui';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import '../schedule/home_page.dart';
+import 'place_selection_page.dart';
+import 'coming_soon_page.dart';
 
-class ScheduleModeSelectionPage extends StatelessWidget {
-  const ScheduleModeSelectionPage({super.key});
+class AppModeSelectionPage extends StatelessWidget {
+  const AppModeSelectionPage({super.key});
 
-  Future<void> _saveModeAndContinue(BuildContext context, bool sameEveryday) async {
+  Future<void> _setMode(BuildContext context, String mode) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
-      // Сохраняем финальную отметку об окончании настройки в облако
-      await FirebaseFirestore.instance.collection('users').doc(user.uid).update({
-        'setupCompleted': true,
-        'sameSchedule': sameEveryday,
-      });
+      // Сохраняем в Firestore
+      await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+        'appMode': mode,
+      }, SetOptions(merge: true));
     }
 
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('same_schedule', sameEveryday);
-    final place = prefs.getString('selected_place') ?? 'school';
+    await prefs.setString('app_operating_mode', mode);
     
     if (context.mounted) {
-      Navigator.pushAndRemoveUntil(
-        context,
-        MaterialPageRoute(builder: (_) => HomePage(place: place)),
-        (route) => false,
-      );
+      if (mode == 'manual') {
+        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const PlaceSelectionPage()));
+      } else {
+        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const ComingSoonPage()));
+      }
     }
   }
 
-  Widget _buildGlassModeCard(
+  Widget _buildModeButton(
     BuildContext context, {
     required IconData icon,
     required String title,
@@ -49,7 +48,7 @@ class ScheduleModeSelectionPage extends StatelessWidget {
           child: Container(
             width: double.infinity,
             margin: const EdgeInsets.symmetric(vertical: 10, horizontal: 24),
-            padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 20),
+            padding: const EdgeInsets.all(24),
             decoration: BoxDecoration(
               color: isDark ? Colors.white.withOpacity(0.05) : Colors.white.withOpacity(0.7),
               borderRadius: BorderRadius.circular(28),
@@ -69,11 +68,11 @@ class ScheduleModeSelectionPage extends StatelessWidget {
                     children: [
                       Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                       const SizedBox(height: 4),
-                      Text(subtitle, style: TextStyle(color: isDark ? Colors.white54 : Colors.black54, fontSize: 13)),
+                      Text(subtitle, style: TextStyle(fontSize: 13, color: isDark ? Colors.white54 : Colors.black54)),
                     ],
                   ),
                 ),
-                const Icon(Icons.arrow_forward_ios_rounded, size: 16, color: Colors.white24),
+                Icon(Icons.arrow_forward_ios_rounded, size: 16, color: isDark ? Colors.white24 : Colors.black26),
               ],
             ),
           ),
@@ -86,14 +85,13 @@ class ScheduleModeSelectionPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return Scaffold(
-      extendBodyBehindAppBar: true,
-      appBar: AppBar(title: const Text('Тип расписания'), backgroundColor: Colors.transparent, elevation: 0),
       body: Stack(
         children: [
           Container(
             decoration: BoxDecoration(
               gradient: LinearGradient(
-                begin: Alignment.topLeft, end: Alignment.bottomRight,
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
                 colors: isDark ? [const Color(0xFF0F2027), const Color(0xFF203A43)] : [const Color(0xFFF0F2F5), const Color(0xFFE0EAFC)],
               ),
             ),
@@ -102,21 +100,21 @@ class ScheduleModeSelectionPage extends StatelessWidget {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Text('Формат времени', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w900)),
+                const Text('Как будем работать?', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w900)),
                 const SizedBox(height: 40),
-                _buildGlassModeCard(
+                _buildModeButton(
                   context,
-                  icon: Icons.calendar_today_rounded,
-                  title: 'Стабильное',
-                  subtitle: 'Одинаковое на каждый день',
-                  onTap: () => _saveModeAndContinue(context, true),
+                  icon: Icons.account_balance_rounded,
+                  title: 'Присоединиться',
+                  subtitle: 'Найти свое учебное заведение в базе',
+                  onTap: () => _setMode(context, 'join'),
                 ),
-                _buildGlassModeCard(
+                _buildModeButton(
                   context,
-                  icon: Icons.event_note_rounded,
-                  title: 'Динамическое',
-                  subtitle: 'Разное на каждый день недели',
-                  onTap: () => _saveModeAndContinue(context, false),
+                  icon: Icons.edit_calendar_rounded,
+                  title: 'Я сам',
+                  subtitle: 'Вручную создать свое расписание звонков',
+                  onTap: () => _setMode(context, 'manual'),
                 ),
               ],
             ),

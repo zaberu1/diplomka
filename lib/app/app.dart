@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'theme_controller.dart';
 import '../screens/onboarding/welcome_page.dart';
 import '../screens/auth/auth_page.dart';
@@ -12,6 +13,11 @@ import '../screens/settings/settings_page.dart';
 import '../screens/profile/profile_page.dart';
 import '../screens/settings/history_page.dart';
 import '../screens/profile/edit_profile_page.dart';
+import '../screens/setup/app_mode_selection_page.dart';
+import '../screens/setup/schedule_mode_selection_page.dart';
+import '../screens/setup/coming_soon_page.dart';
+import '../screens/admin/admin_dashboard.dart';
+import '../screens/teacher/teacher_dashboard.dart';
 
 class ZvonOKApp extends StatefulWidget {
   const ZvonOKApp({super.key});
@@ -42,50 +48,56 @@ class _ZvonOKAppState extends State<ZvonOKApp> {
           debugShowCheckedModeBanner: false,
           title: 'ZvonOK',
           themeMode: theme,
-          theme: ThemeData(
-            brightness: Brightness.light,
-            primarySwatch: Colors.amber,
-            useMaterial3: true,
-          ),
-          darkTheme: ThemeData(
-            brightness: Brightness.dark,
-            primarySwatch: Colors.amber,
-            useMaterial3: true,
-          ),
-          // Используем StreamBuilder для мгновенного отслеживания статуса входа
+          theme: ThemeData(brightness: Brightness.light, primarySwatch: Colors.amber, useMaterial3: true),
+          darkTheme: ThemeData(brightness: Brightness.dark, primarySwatch: Colors.amber, useMaterial3: true),
           home: StreamBuilder<User?>(
             stream: FirebaseAuth.instance.authStateChanges(),
             builder: (context, snapshot) {
-              // Пока ждем ответа от Firebase, показываем Splash
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return const SplashScreen();
-              }
-              
-              // Если пользователь авторизован
-              if (snapshot.hasData && snapshot.data != null) {
-                return FutureBuilder<SharedPreferences>(
-                  future: SharedPreferences.getInstance(),
-                  builder: (context, prefsSnapshot) {
-                    if (!prefsSnapshot.hasData) return const SplashScreen();
+              if (snapshot.connectionState == ConnectionState.waiting) return const SplashScreen();
+              final user = snapshot.data;
+
+              if (user != null) {
+                return StreamBuilder<DocumentSnapshot>(
+                  stream: FirebaseFirestore.instance.collection('users').doc(user.uid).snapshots(),
+                  builder: (context, userSnapshot) {
+                    if (userSnapshot.connectionState == ConnectionState.waiting) return const SplashScreen();
                     
-                    final place = prefsSnapshot.data!.getString('selected_place');
-                    // Если место уже выбрано, идем на главную, иначе на выбор места
-                    if (place != null) {
-                      return HomePage(place: place);
+                    final userData = userSnapshot.data?.data() as Map<String, dynamic>?;
+                    if (userData == null) return const AuthPage();
+
+                    final role = userData['role'] ?? 'student';
+                    if (role == 'admin') return const AdminDashboard();
+                    if (role == 'teacher') return const TeacherDashboard();
+
+                    // --- СТУДЕНТ: ЛОГИКА ОБЛАКА ---
+                    final String? mode = userData['appMode'];
+                    final String? instId = userData['institutionId'];
+                    final bool setupDone = userData['setupCompleted'] ?? false;
+
+                    if (mode == null) {
+                      return const AppModeSelectionPage();
+                    }
+                    
+                    if (mode == 'manual') {
+                      if (instId == null) return const PlaceSelectionPage();
+                      if (!setupDone) return const ScheduleModeSelectionPage();
+                      return HomePage(place: instId);
                     } else {
-                      return const PlaceSelectionPage();
+                      // Если режим "Присоединиться", но заведение еще не выбрано (или нет базы)
+                      if (instId == null) return const ComingSoonPage();
+                      return HomePage(place: instId);
                     }
                   },
                 );
               }
-              
-              // Если не авторизован — проверяем, видел ли он приветствие
+
               return FutureBuilder<SharedPreferences>(
                 future: SharedPreferences.getInstance(),
                 builder: (context, prefsSnapshot) {
                   if (!prefsSnapshot.hasData) return const SplashScreen();
-                  final completed = prefsSnapshot.data!.getBool('welcome_completed') ?? false;
-                  return completed ? const AuthPage() : const WelcomePage();
+                  final prefs = prefsSnapshot.data!;
+                  final welcomeCompleted = prefs.getBool('welcome_completed') ?? false;
+                  return welcomeCompleted ? const AuthPage() : const WelcomePage();
                 },
               );
             },
@@ -97,6 +109,11 @@ class _ZvonOKAppState extends State<ZvonOKApp> {
             '/profile': (context) => const ProfilePage(),
             '/history': (context) => const HistoryPage(),
             '/edit_profile': (context) => const EditProfilePage(),
+            '/mode_selection': (context) => const AppModeSelectionPage(),
+            '/place_selection': (context) => const PlaceSelectionPage(),
+            '/schedule_mode': (context) => const ScheduleModeSelectionPage(),
+            '/admin': (context) => const AdminDashboard(),
+            '/teacher': (context) => const TeacherDashboard(),
           },
         );
       },
