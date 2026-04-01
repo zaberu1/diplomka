@@ -15,7 +15,7 @@ import '../screens/settings/history_page.dart';
 import '../screens/profile/edit_profile_page.dart';
 import '../screens/setup/app_mode_selection_page.dart';
 import '../screens/setup/schedule_mode_selection_page.dart';
-import '../screens/setup/coming_soon_page.dart';
+import '../screens/setup/join_institution_page.dart';
 import '../screens/admin/admin_dashboard.dart';
 import '../screens/teacher/teacher_dashboard.dart';
 
@@ -30,26 +30,32 @@ class _ZvonOKAppState extends State<ZvonOKApp> {
   @override
   void initState() {
     super.initState();
-    _loadTheme();
-  }
-
-  Future<void> _loadTheme() async {
-    final prefs = await SharedPreferences.getInstance();
-    final savedTheme = prefs.getString('theme_mode') ?? 'dark';
-    themeController.value = savedTheme == 'light' ? ThemeMode.light : ThemeMode.dark;
+    themeController.loadSettings(); // Загружаем сохраненную тему и цвет
   }
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<ThemeMode>(
+    return ValueListenableBuilder<ThemeState>(
       valueListenable: themeController,
-      builder: (context, theme, _) {
+      builder: (context, state, _) {
         return MaterialApp(
           debugShowCheckedModeBanner: false,
           title: 'ZvonOK',
-          themeMode: theme,
-          theme: ThemeData(brightness: Brightness.light, primarySwatch: Colors.amber, useMaterial3: true),
-          darkTheme: ThemeData(brightness: Brightness.dark, primarySwatch: Colors.amber, useMaterial3: true),
+          themeMode: state.mode,
+          theme: ThemeData(
+            useMaterial3: true,
+            colorScheme: ColorScheme.fromSeed(
+              seedColor: state.accentColor,
+              brightness: Brightness.light,
+            ),
+          ),
+          darkTheme: ThemeData(
+            useMaterial3: true,
+            colorScheme: ColorScheme.fromSeed(
+              seedColor: state.accentColor,
+              brightness: Brightness.dark,
+            ),
+          ),
           home: StreamBuilder<User?>(
             stream: FirebaseAuth.instance.authStateChanges(),
             builder: (context, snapshot) {
@@ -69,22 +75,18 @@ class _ZvonOKAppState extends State<ZvonOKApp> {
                     if (role == 'admin') return const AdminDashboard();
                     if (role == 'teacher') return const TeacherDashboard();
 
-                    // --- СТУДЕНТ: ЛОГИКА ОБЛАКА ---
                     final String? mode = userData['appMode'];
                     final String? instId = userData['institutionId'];
                     final bool setupDone = userData['setupCompleted'] ?? false;
 
-                    if (mode == null) {
-                      return const AppModeSelectionPage();
-                    }
+                    if (mode == null) return const AppModeSelectionPage();
                     
                     if (mode == 'manual') {
                       if (instId == null) return const PlaceSelectionPage();
                       if (!setupDone) return const ScheduleModeSelectionPage();
                       return HomePage(place: instId);
                     } else {
-                      // Если режим "Присоединиться", но заведение еще не выбрано (или нет базы)
-                      if (instId == null) return const ComingSoonPage();
+                      if (instId == null || !setupDone) return const JoinInstitutionPage();
                       return HomePage(place: instId);
                     }
                   },

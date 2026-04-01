@@ -12,67 +12,32 @@ class WelcomePage extends StatelessWidget {
     await prefs.setBool('welcome_completed', true);
   }
 
-  void _toggleTheme() async {
-    final prefs = await SharedPreferences.getInstance();
-    final currentTheme = themeController.value;
-    final newTheme = currentTheme == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark;
-    await prefs.setString('theme_mode', newTheme == ThemeMode.light ? 'light' : 'dark');
-    themeController.value = newTheme;
-  }
-
-  Widget _buildGlassCard({required Widget child, double opacity = 0.05, double blur = 15, EdgeInsetsGeometry? padding}) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(28),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
-        child: Container(
-          padding: padding ?? const EdgeInsets.all(24),
-          decoration: BoxDecoration(
-            color: Colors.white.withOpacity(opacity),
-            borderRadius: BorderRadius.circular(28),
-            border: Border.all(color: Colors.white.withOpacity(0.1)),
-          ),
-          child: child,
-        ),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bool canPop = Navigator.canPop(context);
 
     return Scaffold(
       body: Stack(
         children: [
-          // Фон
-          Container(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: isDark 
-                  ? [const Color(0xFF0F2027), const Color(0xFF203A43)] 
-                  : [const Color(0xFFF0F2F5), const Color(0xFFE0EAFC)],
-              ),
-            ),
+          // Фон реагирует на тему
+          ValueListenableBuilder<ThemeState>(
+            valueListenable: themeController,
+            builder: (context, state, _) {
+              final isDark = state.mode == ThemeMode.dark;
+              return Container(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: isDark 
+                      ? [const Color(0xFF0F2027), const Color(0xFF203A43)] 
+                      : [const Color(0xFFF0F2F5), const Color(0xFFE0EAFC)],
+                  ),
+                ),
+              );
+            },
           ),
-          // Сферы
-          Positioned(
-            top: 50, right: -30,
-            child: ImageFiltered(
-              imageFilter: ImageFilter.blur(sigmaX: 50, sigmaY: 50),
-              child: Container(width: 150, height: 150, decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.amber.withOpacity(0.1))),
-            ),
-          ),
-          Positioned(
-            bottom: 50, left: -50,
-            child: ImageFiltered(
-              imageFilter: ImageFilter.blur(sigmaX: 70, sigmaY: 70),
-              child: Container(width: 250, height: 250, decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.blue.withOpacity(0.05))),
-            ),
-          ),
-
+          
           SafeArea(
             child: SingleChildScrollView(
               physics: const BouncingScrollPhysics(),
@@ -82,20 +47,17 @@ class WelcomePage extends StatelessWidget {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.end,
                     children: [
-                      _buildGlassCard(
-                        padding: EdgeInsets.zero,
-                        blur: 10,
-                        opacity: 0.1,
-                        child: IconButton(
-                          onPressed: _toggleTheme,
-                          icon: Icon(isDark ? Icons.light_mode_rounded : Icons.dark_mode_rounded, color: Colors.amber),
-                        ),
-                      ),
+                      if (canPop)
+                        IconButton(
+                          onPressed: () => Navigator.pop(context),
+                          icon: const Icon(Icons.close_rounded, color: Colors.amber, size: 28),
+                        )
+                      else
+                        const SizedBox(height: 40),
                     ],
                   ),
-                  const SizedBox(height: 20),
                   
-                  // Логотип
+                  const SizedBox(height: 20),
                   Hero(
                     tag: 'logo',
                     child: Container(
@@ -110,23 +72,34 @@ class WelcomePage extends StatelessWidget {
                   ),
                   const SizedBox(height: 24),
                   const Text('ZvonOK', style: TextStyle(fontSize: 42, fontWeight: FontWeight.w900, letterSpacing: 2)),
-                  Text('Твой умный график звонков', style: TextStyle(fontSize: 16, color: isDark ? Colors.white54 : Colors.black54)),
+                  const Text('Твой умный график звонков', style: TextStyle(fontSize: 16, color: Colors.white54)),
                   
-                  const SizedBox(height: 40),
+                  const SizedBox(height: 32),
 
-                  _buildGlassCard(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('О приложении', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-                        const SizedBox(height: 24),
-                        _buildFeatureItem(Icons.schedule_rounded, 'Индивидуальность', 'Своё расписание для школы или вуза', Colors.green),
-                        _buildFeatureItem(Icons.notifications_active_rounded, 'Уведомления', 'Напоминания о начале и конце пар', Colors.orange),
-                        _buildFeatureItem(Icons.cloud_sync_rounded, 'Синхронизация', 'Доступ к графику с любого устройства', Colors.blue),
-                        _buildFeatureItem(Icons.history_rounded, 'История', 'Все изменения всегда под рукой', Colors.purple),
-                      ],
-                    ),
-                  ),
+                  _buildGlassCard(context, child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Возможности', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 20),
+                      _buildFeatureItem(Icons.groups_rounded, 'Для студентов', 'Подключайся к своей группе и получай расписание от преподавателя.', Colors.amber),
+                      _buildFeatureItem(Icons.edit_note_rounded, 'Для всех', 'Настраивай личный график звонков вручную.', Colors.blue),
+                      _buildFeatureItem(Icons.cloud_sync_rounded, 'Синхронизация', 'Данные хранятся в облаке и доступны везде.', Colors.purple),
+                    ],
+                  )),
+
+                  const SizedBox(height: 20),
+
+                  _buildGlassCard(context, opacity: 0.02, child: const Column(
+                    children: [
+                      Text('О проекте', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      SizedBox(height: 12),
+                      Text(
+                        'ZvonOK объединяет учебные заведения в единую цифровую сеть. Наша цель — удобство и точность времени.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(fontSize: 14, color: Colors.white60, height: 1.5),
+                      ),
+                    ],
+                  )),
 
                   const SizedBox(height: 40),
                   
@@ -134,10 +107,11 @@ class WelcomePage extends StatelessWidget {
                     width: double.infinity,
                     child: ElevatedButton(
                       onPressed: () async {
-                        await _completeWelcome();
-                        if (context.mounted) {
-                          // Теперь ведет на авторизацию
-                          Navigator.pushReplacementNamed(context, '/auth');
+                        if (!canPop) {
+                          await _completeWelcome();
+                          if (context.mounted) Navigator.pushReplacementNamed(context, '/auth');
+                        } else {
+                          Navigator.pop(context);
                         }
                       },
                       style: ElevatedButton.styleFrom(
@@ -146,23 +120,12 @@ class WelcomePage extends StatelessWidget {
                         padding: const EdgeInsets.symmetric(vertical: 18),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
                         elevation: 10,
-                        shadowColor: Colors.amber.withOpacity(0.3),
                       ),
-                      child: const Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Text('Начать использовать', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                          SizedBox(width: 12),
-                          Icon(Icons.arrow_forward_rounded),
-                        ],
-                      ),
+                      child: Text(canPop ? 'Понятно, закрыть' : 'Начать использовать', 
+                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                     ),
                   ),
-                  const SizedBox(height: 24),
-                  Text(
-                    'Версия 1.0.0 • Сделано с любовью для студентов',
-                    style: TextStyle(fontSize: 11, color: isDark ? Colors.white24 : Colors.black26),
-                  ),
+                  const SizedBox(height: 32),
                 ],
               ),
             ),
@@ -172,23 +135,38 @@ class WelcomePage extends StatelessWidget {
     );
   }
 
+  Widget _buildGlassCard(BuildContext context, {required Widget child, double opacity = 0.05}) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(28),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
+        child: Container(
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(opacity),
+            borderRadius: BorderRadius.circular(28),
+            border: Border.all(color: Colors.white.withOpacity(0.1)),
+          ),
+          child: child,
+        ),
+      ),
+    );
+  }
+
   Widget _buildFeatureItem(IconData icon, String title, String desc, Color color) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 20),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(12)),
-            child: Icon(icon, color: color, size: 24),
-          ),
+          Icon(icon, color: color, size: 24),
           const SizedBox(width: 16),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                Text(desc, style: const TextStyle(fontSize: 13, color: Colors.white54)),
+                Text(desc, style: const TextStyle(fontSize: 13, color: Colors.white54, height: 1.3)),
               ],
             ),
           ),

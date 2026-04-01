@@ -2,11 +2,7 @@
 import 'package:flutter/material.dart';
 import 'dart:ui';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import '../../app/theme_controller.dart';
-import '../../widgets/app_drawer.dart';
-import '../setup/place_selection_page.dart';
-import '../profile/profile_page.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -16,9 +12,16 @@ class SettingsPage extends StatefulWidget {
 }
 
 class _SettingsPageState extends State<SettingsPage> {
-  bool remindersEnabled = true;
-  int reminderMinutes = 5;
-  bool use24HourFormat = true; // Новая настройка
+  bool _use24Hour = true;
+  bool _notifications = true;
+
+  final List<Color> _availableColors = [
+    Colors.amber,
+    Colors.blue,
+    Colors.green,
+    Colors.pinkAccent,
+    Colors.deepPurpleAccent,
+  ];
 
   @override
   void initState() {
@@ -29,39 +32,25 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
-      remindersEnabled = prefs.getBool('reminders_enabled') ?? true;
-      reminderMinutes = prefs.getInt('reminder_minutes') ?? 5;
-      use24HourFormat = prefs.getBool('use_24hour_format') ?? true;
+      _use24Hour = prefs.getBool('use_24hour_format') ?? true;
+      _notifications = prefs.getBool('notifications_enabled') ?? true;
     });
   }
 
-  Future<void> _saveSettings() async {
+  Future<void> _toggle24Hour(bool val) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('reminders_enabled', remindersEnabled);
-    await prefs.setInt('reminder_minutes', reminderMinutes);
-    await prefs.setBool('use_24hour_format', use24HourFormat);
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Настройки сохранены'), behavior: SnackBarBehavior.floating));
-    }
+    await prefs.setBool('use_24hour_format', val);
+    setState(() => _use24Hour = val);
   }
 
-  Future<void> _changePlace(BuildContext context) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('selected_place');
-    if (mounted) {
-      Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const PlaceSelectionPage()));
-    }
-  }
-
-  Widget _buildGlassCard({required Widget child, double opacity = 0.05, double blur = 15}) {
+  Widget _buildGlassCard({required Widget child, double opacity = 0.05}) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return ClipRRect(
       borderRadius: BorderRadius.circular(24),
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
+        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
         child: Container(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
             color: isDark ? Colors.white.withOpacity(opacity) : Colors.white.withOpacity(0.7),
             borderRadius: BorderRadius.circular(24),
@@ -78,14 +67,12 @@ class _SettingsPageState extends State<SettingsPage> {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Scaffold(
-      drawer: const AppDrawer(),
       extendBodyBehindAppBar: true,
       appBar: AppBar(
         title: const Text('Настройки', style: TextStyle(fontWeight: FontWeight.bold)),
         backgroundColor: Colors.transparent,
         elevation: 0,
         centerTitle: true,
-        actions: [_buildUserAvatar(context), const SizedBox(width: 16)],
       ),
       body: Stack(
         children: [
@@ -100,125 +87,110 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
             ),
           ),
-          Positioned(
-            top: 50, right: -30,
-            child: Container(
-              width: 150, height: 150,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                boxShadow: [BoxShadow(color: Colors.amber.withOpacity(0.1), blurRadius: 80, spreadRadius: 20)],
+          SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // СЕКЦИЯ: ТЕМА
+                  const Text('ОФОРМЛЕНИЕ', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2, color: Colors.white54)),
+                  const SizedBox(height: 12),
+                  _buildGlassCard(
+                    child: Column(
+                      children: [
+                        ValueListenableBuilder<ThemeState>(
+                          valueListenable: themeController,
+                          builder: (context, state, _) {
+                            return ListTile(
+                              leading: Icon(state.mode == ThemeMode.dark ? Icons.dark_mode_rounded : Icons.light_mode_rounded, color: state.accentColor),
+                              title: const Text('Темная тема', style: TextStyle(fontWeight: FontWeight.w600)),
+                              trailing: Switch(
+                                value: state.mode == ThemeMode.dark,
+                                activeColor: state.accentColor,
+                                onChanged: (v) => themeController.toggleTheme(),
+                              ),
+                              contentPadding: EdgeInsets.zero,
+                            );
+                          },
+                        ),
+                        const Divider(color: Colors.white10),
+                        const SizedBox(height: 8),
+                        const Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text('Цветовая схема', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
+                        ),
+                        const SizedBox(height: 16),
+                        ValueListenableBuilder<ThemeState>(
+                          valueListenable: themeController,
+                          builder: (context, state, _) {
+                            return Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: _availableColors.map((color) {
+                                bool isSelected = state.accentColor.value == color.value;
+                                return GestureDetector(
+                                  onTap: () => themeController.setAccentColor(color),
+                                  child: Container(
+                                    width: 45,
+                                    height: 45,
+                                    decoration: BoxDecoration(
+                                      color: color,
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                        color: isSelected ? Colors.white : Colors.transparent,
+                                        width: 3,
+                                      ),
+                                      boxShadow: isSelected ? [BoxShadow(color: color.withOpacity(0.5), blurRadius: 10, spreadRadius: 2)] : [],
+                                    ),
+                                    child: isSelected ? const Icon(Icons.check, color: Colors.white) : null,
+                                  ),
+                                );
+                              }).toList(),
+                            );
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 32),
+
+                  // СЕКЦИЯ: ПРИЛОЖЕНИЕ
+                  const Text('ПРИЛОЖЕНИЕ', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2, color: Colors.white54)),
+                  const SizedBox(height: 12),
+                  _buildGlassCard(
+                    child: Column(
+                      children: [
+                        ListTile(
+                          leading: const Icon(Icons.access_time_rounded, color: Colors.white70),
+                          title: const Text('24-часовой формат'),
+                          trailing: Switch(value: _use24Hour, onChanged: _toggle24Hour),
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                        const Divider(color: Colors.white10),
+                        ListTile(
+                          leading: const Icon(Icons.notifications_active_rounded, color: Colors.white70),
+                          title: const Text('Уведомления'),
+                          trailing: Switch(value: _notifications, onChanged: (v) => setState(() => _notifications = v)),
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 40),
+                  Center(
+                    child: Text(
+                      'ZvonOK v1.1.0\nЛицензия студента',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: isDark ? Colors.white24 : Colors.black26, fontSize: 12),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
-          
-          SafeArea(
-            child: ListView(
-              physics: const BouncingScrollPhysics(),
-              padding: const EdgeInsets.all(24),
-              children: [
-                _buildGlassCard(
-                  child: Column(
-                    children: [
-                      SwitchListTile(
-                        title: const Text('Тёмная тема', style: TextStyle(fontWeight: FontWeight.w600)),
-                        secondary: const Icon(Icons.dark_mode_outlined, color: Colors.amber),
-                        value: themeController.value == ThemeMode.dark,
-                        onChanged: (v) async {
-                          await themeController.toggleTheme();
-                          setState(() {});
-                        },
-                        activeColor: Colors.amber,
-                        contentPadding: EdgeInsets.zero,
-                      ),
-                      const Divider(color: Colors.white10),
-                      SwitchListTile(
-                        title: const Text('Формат 24ч', style: TextStyle(fontWeight: FontWeight.w600)),
-                        subtitle: const Text('Использовать 24-часовой формат', style: TextStyle(fontSize: 12, color: Colors.white54)),
-                        secondary: const Icon(Icons.access_time_rounded, color: Colors.amber),
-                        value: use24HourFormat,
-                        onChanged: (v) => setState(() => use24HourFormat = v),
-                        activeColor: Colors.amber,
-                        contentPadding: EdgeInsets.zero,
-                      ),
-                      const Divider(color: Colors.white10),
-                      ListTile(
-                        leading: const Icon(Icons.swap_horiz_rounded, color: Colors.amber),
-                        title: const Text('Сменить место', style: TextStyle(fontWeight: FontWeight.w600)),
-                        subtitle: const Text('Школа / Колледж', style: TextStyle(fontSize: 12, color: Colors.white54)),
-                        onTap: () => _changePlace(context),
-                        contentPadding: EdgeInsets.zero,
-                        trailing: const Icon(Icons.arrow_forward_ios, size: 14, color: Colors.white24),
-                      ),
-                    ],
-                  ),
-                ),
-                
-                const SizedBox(height: 24),
-                
-                _buildGlassCard(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          const Icon(Icons.notifications_active_outlined, color: Colors.amber, size: 20),
-                          const SizedBox(width: 12),
-                          const Text('Уведомления', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                          const Spacer(),
-                          Switch(
-                            value: remindersEnabled,
-                            onChanged: (v) => setState(() => remindersEnabled = v),
-                            activeColor: Colors.amber,
-                          ),
-                        ],
-                      ),
-                      if (remindersEnabled) ...[
-                        const SizedBox(height: 16),
-                        Text('Напомнить за $reminderMinutes минут', style: const TextStyle(color: Colors.white70)),
-                        Slider(
-                          value: reminderMinutes.toDouble(),
-                          min: 1, max: 30,
-                          divisions: 29,
-                          label: '$reminderMinutes',
-                          onChanged: (v) => setState(() => reminderMinutes = v.round()),
-                          activeColor: Colors.amber,
-                          inactiveColor: Colors.white10,
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-                
-                const SizedBox(height: 40),
-                
-                ElevatedButton(
-                  onPressed: _saveSettings,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.amber,
-                    foregroundColor: Colors.black,
-                    padding: const EdgeInsets.symmetric(vertical: 18),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                    elevation: 8,
-                  ),
-                  child: const Text('Сохранить изменения', style: TextStyle(fontWeight: FontWeight.bold)),
-                ),
-              ],
-            ),
-          ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildUserAvatar(BuildContext context) {
-    final user = FirebaseAuth.instance.currentUser;
-    return GestureDetector(
-      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProfilePage())),
-      child: CircleAvatar(
-        radius: 18,
-        backgroundColor: Colors.white10,
-        backgroundImage: user?.photoURL != null ? NetworkImage(user!.photoURL!) : null,
-        child: user?.photoURL == null ? const Icon(Icons.person, size: 20, color: Colors.white70) : null,
       ),
     );
   }

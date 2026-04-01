@@ -11,7 +11,7 @@ import '../admin/admin_dashboard.dart';
 import '../teacher/teacher_dashboard.dart';
 import '../schedule/home_page.dart';
 import '../setup/app_mode_selection_page.dart';
-import '../setup/coming_soon_page.dart';
+import '../setup/join_institution_page.dart';
 
 class AuthPage extends StatefulWidget {
   const AuthPage({super.key});
@@ -54,6 +54,7 @@ class _AuthPageState extends State<AuthPage> {
             'role': email == 'admin@zvonok.ru' ? 'admin' : 'student',
             'createdAt': FieldValue.serverTimestamp(),
             'setupCompleted': false,
+            'pendingRequest': false, // Изначально заявки нет
           });
         }
       }
@@ -72,36 +73,31 @@ class _AuthPageState extends State<AuthPage> {
           } else if (role == 'teacher') {
             Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const TeacherDashboard()));
           } else {
-            // ДЛЯ СТУДЕНТА: Проверка завершенности настройки через Firestore
+            // ЛОГИКА ДЛЯ СТУДЕНТА ПРИ ВХОДЕ
             final bool setupCompleted = userData?['setupCompleted'] ?? false;
+            final bool pendingRequest = userData?['pendingRequest'] ?? false; // Проверка на заявку
             final String? mode = userData?['appMode'];
             final String? place = userData?['institutionId'];
-            final bool? sameSchedule = userData?['sameSchedule'];
 
-            // Синхронизируем данные из облака в локальные настройки
             if (mode != null) await prefs.setString('app_operating_mode', mode);
             if (place != null) await prefs.setString('selected_place', place);
-            if (sameSchedule != null) await prefs.setBool('same_schedule', sameSchedule);
 
-            if (!setupCompleted) {
-              // Если настройка не завершена, определяем на каком этапе остановились
+            // Если есть активная заявка ИЛИ настройка завершена — идем на главную
+            if (pendingRequest || setupCompleted) {
+              Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomePage(place: place ?? 'school')));
+            } else {
+              // Если заявки нет и настройка не закончена — определяем этап
               if (mode == null) {
                 Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const AppModeSelectionPage()));
               } else if (place == null) {
                 if (mode == 'manual') {
                   Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const PlaceSelectionPage()));
                 } else {
-                  Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const ComingSoonPage()));
+                  Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const JoinInstitutionPage()));
                 }
               } else {
-                // Если режим и место есть, но setupCompleted еще false (например, не выбрали тип расписания)
-                // Можно отправить на страницу выбора типа расписания (ScheduleModeSelectionPage)
-                // Но для надежности проверим, есть ли импорт или просто перейдем к началу цепочки
                 Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const AppModeSelectionPage()));
               }
-            } else {
-              // Всё настроено в облаке — идем на главную
-              Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomePage(place: place ?? 'school')));
             }
           }
         }

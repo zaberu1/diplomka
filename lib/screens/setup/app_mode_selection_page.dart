@@ -5,7 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'place_selection_page.dart';
-import 'coming_soon_page.dart';
+import 'join_institution_page.dart';
 
 class AppModeSelectionPage extends StatelessWidget {
   const AppModeSelectionPage({super.key});
@@ -26,7 +26,8 @@ class AppModeSelectionPage extends StatelessWidget {
       if (mode == 'manual') {
         Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const PlaceSelectionPage()));
       } else {
-        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const ComingSoonPage()));
+        // ТЕПЕРЬ ПЕРЕХОДИМ НА РЕАЛЬНУЮ СТРАНИЦУ ВЫБОРА
+        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const JoinInstitutionPage()));
       }
     }
   }

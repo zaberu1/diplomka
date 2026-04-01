@@ -4,8 +4,9 @@ import 'dart:ui';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../auth/auth_page.dart';
-import '../schedule/edit_lesson_page.dart';
-import '../../models/lesson_model.dart';
+import 'group_schedule_page.dart';
+import '../../../widgets/app_drawer.dart';
+import '../../../widgets/loading_screen.dart'; // Импортируем новый виджет
 
 class TeacherDashboard extends StatefulWidget {
   const TeacherDashboard({super.key});
@@ -19,12 +20,13 @@ class _TeacherDashboardState extends State<TeacherDashboard> with SingleTickerPr
   final FirebaseFirestore _db = FirebaseFirestore.instance;
   final User? user = FirebaseAuth.instance.currentUser;
   String? selectedInstitution;
+  String? institutionName;
   bool isLoading = true;
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
     _checkInstitution();
   }
 
@@ -40,6 +42,7 @@ class _TeacherDashboardState extends State<TeacherDashboard> with SingleTickerPr
     if (mounted) {
       setState(() {
         selectedInstitution = doc.data()?['institutionId'];
+        institutionName = doc.data()?['institutionName'];
         isLoading = false;
       });
     }
@@ -50,6 +53,27 @@ class _TeacherDashboardState extends State<TeacherDashboard> with SingleTickerPr
     if (mounted) {
       Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (_) => const AuthPage()), (route) => false);
     }
+  }
+
+  void _approveRequest(String requestId, String studentId, String groupId, String instId, String instName) async {
+    await _db.collection('users').doc(studentId).update({
+      'groupId': groupId,
+      'institutionId': instId,
+      'institutionName': instName,
+      'setupCompleted': true,
+      'pendingRequest': false,
+    });
+    await _db.collection('requests').doc(requestId).delete();
+    if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Студент принят в группу')));
+  }
+
+  void _rejectRequest(String requestId, String studentId) async {
+    await _db.collection('users').doc(studentId).update({
+      'pendingRequest': false,
+      'appMode': 'manual',
+    });
+    await _db.collection('requests').doc(requestId).delete();
+    if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Заявка отклонена')));
   }
 
   Widget _buildGlassCard({required Widget child, double opacity = 0.05}) {
@@ -73,51 +97,103 @@ class _TeacherDashboardState extends State<TeacherDashboard> with SingleTickerPr
 
   @override
   Widget build(BuildContext context) {
-    if (isLoading) return const Scaffold(body: Center(child: CircularProgressIndicator(color: Colors.amber)));
-    if (selectedInstitution == null) return _buildInstitutionSelection();
+    // ИСПОЛЬЗУЕМ КРАСИВУЮ ЗАГРУЗКУ
+    if (isLoading) return const LoadingScreen(message: 'Загрузка данных...');
+    
+    if (selectedInstitution == null) {
+      return Scaffold(
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.lock_person_rounded, size: 80, color: Colors.amber),
+              const SizedBox(height: 24),
+              const Text('Доступ ограничен', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+              const Padding(padding: EdgeInsets.all(24), child: Text('Администратор еще не привязал вас к заведению.', textAlign: TextAlign.center)),
+              ElevatedButton(onPressed: _logout, child: const Text('Выход'))
+            ],
+          ),
+        ),
+      );
+    }
 
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Scaffold(
+      drawer: const AppDrawer(),
       extendBodyBehindAppBar: true,
       appBar: AppBar(
-        title: const Text('Панель Учителя', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: Column(
+          children: [
+            const Text('Панель Учителя', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+            if (institutionName != null) Text(institutionName!, style: const TextStyle(fontSize: 12, color: Colors.amber)),
+          ],
+        ),
         backgroundColor: Colors.transparent,
         elevation: 0,
         centerTitle: true,
-        actions: [IconButton(icon: const Icon(Icons.logout_rounded, color: Colors.redAccent), onPressed: _logout)],
         bottom: TabBar(
           controller: _tabController,
           indicatorColor: Colors.amber,
           labelColor: Colors.amber,
-          unselectedLabelColor: Colors.white54,
           tabs: const [
-            Tab(icon: Icon(Icons.groups_rounded), text: 'Мои группы'),
-            Tab(icon: Icon(Icons.calendar_month_rounded), text: 'Расписание'),
+            Tab(icon: Icon(Icons.groups_rounded), text: 'Группы'),
+            Tab(icon: Icon(Icons.calendar_month_rounded), text: 'График'),
+            Tab(icon: Icon(Icons.person_add_alt_1_rounded), text: 'Заявки'),
           ],
         ),
       ),
       body: Stack(
         children: [
-          Container(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft, end: Alignment.bottomRight,
-                colors: isDark ? [const Color(0xFF0F2027), const Color(0xFF203A43)] : [const Color(0xFFF0F2F5), const Color(0xFFE0EAFC)],
-              ),
-            ),
-          ),
+          Container(decoration: BoxDecoration(gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: isDark ? [const Color(0xFF0F2027), const Color(0xFF203A43)] : [const Color(0xFFF0F2F5), const Color(0xFFE0EAFC)]))),
           SafeArea(
             child: TabBarView(
               controller: _tabController,
               children: [
                 _buildGroupsTab(),
                 _buildSchedulesTab(),
+                _buildRequestsTab(),
               ],
             ),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildRequestsTab() {
+    return StreamBuilder<QuerySnapshot>(
+      stream: _db.collection('requests').where('teacherId', isEqualTo: user?.uid).snapshots(),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) return const Center(child: CircularProgressIndicator(color: Colors.amber));
+        final reqs = snapshot.data!.docs;
+        if (reqs.isEmpty) return const Center(child: Text('Новых заявок пока нет', style: TextStyle(color: Colors.white38)));
+
+        return ListView.builder(
+          padding: const EdgeInsets.all(20),
+          itemCount: reqs.length,
+          itemBuilder: (context, index) {
+            final req = reqs[index].data() as Map<String, dynamic>;
+            final id = reqs[index].id;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: _buildGlassCard(
+                child: ListTile(
+                  title: Text(req['studentName'] ?? 'Студент', style: const TextStyle(fontWeight: FontWeight.bold)),
+                  subtitle: Text('Группа: ${req['groupName']}\n${req['studentEmail']}', style: const TextStyle(fontSize: 12, color: Colors.white54)),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(icon: const Icon(Icons.check_circle_outline, color: Colors.greenAccent), onPressed: () => _approveRequest(id, req['studentId'], req['groupId'], req['institutionId'], req['institutionName'])),
+                      IconButton(icon: const Icon(Icons.cancel_outlined, color: Colors.redAccent), onPressed: () => _rejectRequest(id, req['studentId'])),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -137,7 +213,7 @@ class _TeacherDashboardState extends State<TeacherDashboard> with SingleTickerPr
           child: StreamBuilder<QuerySnapshot>(
             stream: _db.collection('groups').where('teacherId', isEqualTo: user?.uid).snapshots(),
             builder: (context, snapshot) {
-              if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+              if (!snapshot.hasData) return const Center(child: CircularProgressIndicator(color: Colors.amber));
               final groups = snapshot.data!.docs;
               if (groups.isEmpty) return const Center(child: Text('У вас еще нет групп', style: TextStyle(color: Colors.white54)));
 
@@ -172,7 +248,7 @@ class _TeacherDashboardState extends State<TeacherDashboard> with SingleTickerPr
     return StreamBuilder<QuerySnapshot>(
       stream: _db.collection('groups').where('teacherId', isEqualTo: user?.uid).snapshots(),
       builder: (context, snapshot) {
-        if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+        if (!snapshot.hasData) return const Center(child: CircularProgressIndicator(color: Colors.amber));
         final groups = snapshot.data!.docs;
         if (groups.isEmpty) return const Center(child: Text('Сначала создайте группу', style: TextStyle(color: Colors.white54)));
 
@@ -199,68 +275,6 @@ class _TeacherDashboardState extends State<TeacherDashboard> with SingleTickerPr
     );
   }
 
-  Widget _buildInstitutionSelection() {
-    return Scaffold(
-      extendBodyBehindAppBar: true,
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.logout_rounded, color: Colors.redAccent),
-            onPressed: _logout,
-            tooltip: 'Выйти',
-          ),
-          const SizedBox(width: 8),
-        ],
-      ),
-      body: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(30),
-        decoration: const BoxDecoration(gradient: LinearGradient(colors: [Color(0xFF0F2027), Color(0xFF203A43)], begin: Alignment.topLeft, end: Alignment.bottomRight)),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const SizedBox(height: 60),
-            const Icon(Icons.school_rounded, size: 80, color: Colors.amber),
-            const SizedBox(height: 24),
-            const Text('Где вы преподаете?', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white)),
-            const SizedBox(height: 12),
-            const Text('Выберите ваше учебное заведение из списка.', textAlign: TextAlign.center, style: TextStyle(color: Colors.white54)),
-            const SizedBox(height: 40),
-            Expanded(
-              child: StreamBuilder<QuerySnapshot>(
-                stream: _db.collection('institutions').snapshots(),
-                builder: (context, snapshot) {
-                  if (!snapshot.hasData) return const Center(child: CircularProgressIndicator(color: Colors.amber));
-                  final institutions = snapshot.data!.docs;
-                  return ListView.builder(
-                    itemCount: institutions.length,
-                    itemBuilder: (context, index) {
-                      final inst = institutions[index].data() as Map<String, dynamic>;
-                      return Padding(
-                        padding: const EdgeInsets.only(bottom: 12),
-                        child: _buildGlassCard(
-                          child: ListTile(
-                            title: Text(inst['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
-                            onTap: () {
-                              _db.collection('users').doc(user!.uid).update({'institutionId': institutions[index].id});
-                              setState(() => selectedInstitution = institutions[index].id);
-                            },
-                          ),
-                        ),
-                      );
-                    },
-                  );
-                },
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   void _showAddGroupDialog() {
     final ctrl = TextEditingController();
     showDialog(
@@ -271,20 +285,17 @@ class _TeacherDashboardState extends State<TeacherDashboard> with SingleTickerPr
         content: TextField(controller: ctrl, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: 'Название группы (например, П-41)')),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
-          ElevatedButton(
-            onPressed: () {
-              if (ctrl.text.isNotEmpty) {
-                _db.collection('groups').add({
-                  'name': ctrl.text,
-                  'teacherId': user!.uid,
-                  'institutionId': selectedInstitution,
-                  'schedule': [],
-                });
-                Navigator.pop(context);
-              }
-            },
-            child: const Text('Создать'),
-          ),
+          ElevatedButton(onPressed: () {
+            if (ctrl.text.isNotEmpty) {
+              _db.collection('groups').add({
+                'name': ctrl.text,
+                'teacherId': user!.uid,
+                'institutionId': selectedInstitution,
+                'schedule': {},
+              });
+              Navigator.pop(context);
+            }
+          }, child: const Text('Создать')),
         ],
       ),
     );
@@ -297,24 +308,23 @@ class _TeacherDashboardState extends State<TeacherDashboard> with SingleTickerPr
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(28))),
       builder: (context) => Column(
         children: [
-          Padding(
-            padding: const EdgeInsets.all(20),
-            child: Text('Студенты группы $groupName', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          ),
+          Padding(padding: const EdgeInsets.all(20), child: Text('Студенты группы $groupName', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold))),
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
               stream: _db.collection('users').where('groupId', isEqualTo: groupId).snapshots(),
               builder: (context, snapshot) {
-                if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+                if (!snapshot.hasData) return const Center(child: CircularProgressIndicator(color: Colors.amber));
                 final students = snapshot.data!.docs;
                 if (students.isEmpty) return const Center(child: Text('В группе пока нет студентов'));
                 return ListView.builder(
                   itemCount: students.length,
                   itemBuilder: (context, index) {
                     final s = students[index].data() as Map<String, dynamic>;
+                    final String studentName = s['displayName'] ?? s['email'] ?? 'No Name';
                     return ListTile(
                       leading: const Icon(Icons.person, color: Colors.amber),
-                      title: Text(s['email'] ?? 'No Email'),
+                      title: Text(studentName),
+                      subtitle: s['displayName'] != null ? Text(s['email'] ?? '', style: const TextStyle(fontSize: 11, color: Colors.white24)) : null,
                       trailing: IconButton(icon: const Icon(Icons.remove_circle_outline, color: Colors.redAccent), onPressed: () => _db.collection('users').doc(students[index].id).update({'groupId': null})),
                     );
                   },
@@ -328,6 +338,6 @@ class _TeacherDashboardState extends State<TeacherDashboard> with SingleTickerPr
   }
 
   void _manageGroupSchedule(String groupId, String groupName) {
-    // Редактирование расписания группы
+    Navigator.push(context, MaterialPageRoute(builder: (_) => GroupSchedulePage(groupId: groupId, groupName: groupName)));
   }
 }

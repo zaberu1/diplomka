@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import 'dart:ui';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'dart:io';
@@ -22,23 +23,37 @@ class _EditProfilePageState extends State<EditProfilePage> {
 
   final User? user = FirebaseAuth.instance.currentUser;
   final ImagePicker _picker = ImagePicker();
-  bool _isLoading = false;
+  bool _isLoading = true;
   File? _selectedImage;
   String? _currentPhotoURL;
+  String? _role; // Добавляем роль
 
   @override
   void initState() {
     super.initState();
-    _loadUserData();
+    _loadAllUserData();
   }
 
-  void _loadUserData() {
-    if (user != null) {
-      _nameController.text = user!.displayName ?? '';
-      _emailController.text = user!.email ?? '';
-      _phoneController.text = user!.phoneNumber ?? '';
-      _currentPhotoURL = user!.photoURL;
+  Future<void> _loadAllUserData() async {
+    if (user == null) return;
+    
+    _nameController.text = user!.displayName ?? '';
+    _emailController.text = user!.email ?? '';
+    _currentPhotoURL = user!.photoURL;
+
+    try {
+      final doc = await FirebaseFirestore.instance.collection('users').doc(user!.uid).get();
+      if (doc.exists) {
+        final data = doc.data()!;
+        _role = data['role'] ?? 'student';
+        _phoneController.text = data['phone'] ?? '';
+        _bioController.text = data['bio'] ?? '';
+      }
+    } catch (e) {
+      debugPrint('Ошибка загрузки: $e');
     }
+
+    if (mounted) setState(() => _isLoading = false);
   }
 
   Future<void> _pickImage() async {
@@ -47,9 +62,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
       backgroundColor: Colors.transparent,
       builder: (context) => Container(
         decoration: BoxDecoration(
-          color: Theme.of(context).brightness == Brightness.dark 
-            ? const Color(0xFF1A1C2C) 
-            : Colors.white,
+          color: Theme.of(context).brightness == Brightness.dark ? const Color(0xFF1A1C2C) : Colors.white,
           borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
         ),
         child: SafeArea(
@@ -87,10 +100,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
       final ref = FirebaseStorage.instance.ref().child('profiles/$fileName');
       await ref.putFile(imageFile);
       return await ref.getDownloadURL();
-    } catch (e) {
-      debugPrint('Ошибка загрузки: $e');
-      return null;
-    }
+    } catch (e) { return null; }
   }
 
   Future<void> _updateProfile() async {
@@ -102,14 +112,27 @@ class _EditProfilePageState extends State<EditProfilePage> {
           newPhotoURL = await _uploadImage(_selectedImage!);
           if (newPhotoURL != null) await user!.updatePhotoURL(newPhotoURL);
         }
+
         if (_nameController.text.trim() != user!.displayName) {
           await user!.updateDisplayName(_nameController.text.trim());
         }
-        if (_emailController.text.trim() != user!.email) {
-          await user!.verifyBeforeUpdateEmail(_emailController.text.trim());
+
+        final dataToUpdate = {
+          'displayName': _nameController.text.trim(),
+          'phone': _phoneController.text.trim(),
+          'photoURL': newPhotoURL,
+          'updatedAt': FieldValue.serverTimestamp(),
+        };
+
+        // Сохраняем bio (должность) только если пользователь - учитель
+        if (_role == 'teacher') {
+          dataToUpdate['bio'] = _bioController.text.trim();
         }
+
+        await FirebaseFirestore.instance.collection('users').doc(user!.uid).set(dataToUpdate, SetOptions(merge: true));
+
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Профиль успешно обновлен!')));
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Данные сохранены!')));
           Navigator.pop(context, true);
         }
       } catch (e) {
@@ -120,12 +143,12 @@ class _EditProfilePageState extends State<EditProfilePage> {
     }
   }
 
-  Widget _buildGlassCard({required Widget child, double opacity = 0.05, double blur = 15}) {
+  Widget _buildGlassCard({required Widget child, double opacity = 0.05}) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return ClipRRect(
       borderRadius: BorderRadius.circular(24),
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
+        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
         child: Container(
           padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
@@ -139,14 +162,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
     );
   }
 
-  Widget _buildTextField({
-    required TextEditingController controller,
-    required String label,
-    required IconData icon,
-    int maxLines = 1,
-    TextInputType keyboardType = TextInputType.text,
-    String? Function(String?)? validator,
-  }) {
+  Widget _buildTextField({required TextEditingController controller, required String label, required IconData icon, int maxLines = 1, TextInputType keyboardType = TextInputType.text}) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
@@ -156,7 +172,6 @@ class _EditProfilePageState extends State<EditProfilePage> {
           controller: controller,
           maxLines: maxLines,
           keyboardType: keyboardType,
-          validator: validator,
           style: const TextStyle(fontWeight: FontWeight.w500),
           decoration: InputDecoration(
             labelText: label,
@@ -172,154 +187,60 @@ class _EditProfilePageState extends State<EditProfilePage> {
 
   @override
   Widget build(BuildContext context) {
+    if (_isLoading) return const Scaffold(body: Center(child: CircularProgressIndicator(color: Colors.amber)));
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Scaffold(
       extendBodyBehindAppBar: true,
-      appBar: AppBar(
-        title: const Text('Редактор профиля', style: TextStyle(fontWeight: FontWeight.bold)),
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        centerTitle: true,
-      ),
+      appBar: AppBar(title: const Text('Редактирование'), backgroundColor: Colors.transparent, elevation: 0, centerTitle: true),
       body: Stack(
         children: [
-          Container(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: isDark 
-                  ? [const Color(0xFF0F2027), const Color(0xFF203A43)] 
-                  : [const Color(0xFFF0F2F5), const Color(0xFFE0EAFC)],
-              ),
-            ),
-          ),
-          Positioned(
-            top: 50, right: -30,
-            child: ImageFiltered(
-              imageFilter: ImageFilter.blur(sigmaX: 50, sigmaY: 50),
-              child: Container(width: 150, height: 150, decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.amber.withOpacity(0.1))),
-            ),
-          ),
-          
-          _isLoading 
-            ? const Center(child: CircularProgressIndicator(color: Colors.amber))
-            : SafeArea(
-                child: SingleChildScrollView(
-                  physics: const BouncingScrollPhysics(),
-                  padding: const EdgeInsets.all(24),
-                  child: Form(
-                    key: _formKey,
-                    child: Column(
-                      children: [
-                        // Аватар
-                        Center(
-                          child: GestureDetector(
-                            onTap: _pickImage,
-                            child: Stack(
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.all(4),
-                                  decoration: BoxDecoration(
-                                    shape: BoxShape.circle,
-                                    border: Border.all(color: Colors.amber, width: 2),
-                                    boxShadow: [BoxShadow(color: Colors.amber.withOpacity(0.2), blurRadius: 15)],
-                                  ),
-                                  child: CircleAvatar(
-                                    radius: 55,
-                                    backgroundColor: Colors.white12,
-                                    backgroundImage: _selectedImage != null 
-                                      ? FileImage(_selectedImage!) as ImageProvider
-                                      : (_currentPhotoURL != null ? NetworkImage(_currentPhotoURL!) : null),
-                                    child: (_selectedImage == null && _currentPhotoURL == null)
-                                      ? const Icon(Icons.person, size: 55, color: Colors.amber)
-                                      : null,
-                                  ),
-                                ),
-                                Positioned(
-                                  bottom: 0, right: 0,
-                                  child: Container(
-                                    padding: const EdgeInsets.all(6),
-                                    decoration: const BoxDecoration(color: Colors.amber, shape: BoxShape.circle),
-                                    child: const Icon(Icons.camera_alt_rounded, size: 18, color: Colors.black),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 32),
+          Container(decoration: BoxDecoration(gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: isDark ? [const Color(0xFF0F2027), const Color(0xFF203A43)] : [const Color(0xFFF0F2F5), const Color(0xFFE0EAFC)]))),
+          SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(24),
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  children: [
+                    _buildAvatarHeader(),
+                    const SizedBox(height: 32),
+                    _buildTextField(controller: _nameController, label: 'Ваше имя', icon: Icons.person_outline),
+                    _buildTextField(controller: _phoneController, label: 'Телефон', icon: Icons.phone_outlined, keyboardType: TextInputType.phone),
+                    
+                    // ПОКАЗЫВАЕМ ПОЛЕ ТОЛЬКО УЧИТЕЛЮ
+                    if (_role == 'teacher')
+                      _buildTextField(controller: _bioController, label: 'Должность / Кафедра', icon: Icons.work_outline, maxLines: 2),
 
-                        // Поля ввода
-                        _buildTextField(
-                          controller: _nameController,
-                          label: 'Имя и фамилия',
-                          icon: Icons.person_outline_rounded,
-                          validator: (v) => (v == null || v.trim().isEmpty) ? 'Введите имя' : null,
-                        ),
-                        _buildTextField(
-                          controller: _emailController,
-                          label: 'Email',
-                          icon: Icons.email_outlined,
-                          keyboardType: TextInputType.emailAddress,
-                          validator: (v) => (v == null || !v.contains('@')) ? 'Некорректный email' : null,
-                        ),
-                        _buildTextField(
-                          controller: _phoneController,
-                          label: 'Телефон',
-                          icon: Icons.phone_outlined,
-                          keyboardType: TextInputType.phone,
-                        ),
-                        _buildTextField(
-                          controller: _bioController,
-                          label: 'О себе',
-                          icon: Icons.info_outline_rounded,
-                          maxLines: 2,
-                        ),
-
-                        const SizedBox(height: 24),
-
-                        // Кнопки
-                        SizedBox(
-                          width: double.infinity,
-                          child: ElevatedButton(
-                            onPressed: _updateProfile,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.amber,
-                              foregroundColor: Colors.black,
-                              padding: const EdgeInsets.symmetric(vertical: 18),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                              elevation: 8,
-                              shadowColor: Colors.amber.withOpacity(0.4),
-                            ),
-                            child: const Text('Сохранить изменения', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        SizedBox(
-                          width: double.infinity,
-                          child: TextButton(
-                            onPressed: () => Navigator.pop(context),
-                            child: Text('Отмена', style: TextStyle(color: isDark ? Colors.white70 : Colors.black54)),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+                    const SizedBox(height: 24),
+                    SizedBox(width: double.infinity, child: ElevatedButton(onPressed: _updateProfile, style: ElevatedButton.styleFrom(backgroundColor: Colors.amber, foregroundColor: Colors.black, padding: const EdgeInsets.symmetric(vertical: 18), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20))), child: const Text('Сохранить', style: TextStyle(fontWeight: FontWeight.bold)))),
+                  ],
                 ),
               ),
+            ),
+          ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildAvatarHeader() {
+    return Center(
+      child: GestureDetector(
+        onTap: _pickImage,
+        child: CircleAvatar(
+          radius: 55,
+          backgroundColor: Colors.white12,
+          backgroundImage: _selectedImage != null ? FileImage(_selectedImage!) as ImageProvider : (_currentPhotoURL != null ? NetworkImage(_currentPhotoURL!) : null),
+          child: (_selectedImage == null && _currentPhotoURL == null) ? const Icon(Icons.person, size: 55, color: Colors.amber) : null,
+        ),
       ),
     );
   }
 
   @override
   void dispose() {
-    _nameController.dispose();
-    _emailController.dispose();
-    _phoneController.dispose();
-    _bioController.dispose();
+    _nameController.dispose(); _emailController.dispose(); _phoneController.dispose(); _bioController.dispose();
     super.dispose();
   }
 }

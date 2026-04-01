@@ -24,7 +24,7 @@ class _AdminDashboardState extends State<AdminDashboard> with SingleTickerProvid
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this); // Вернули к 3
+    _tabController = TabController(length: 3, vsync: this);
   }
 
   @override
@@ -42,6 +42,49 @@ class _AdminDashboardState extends State<AdminDashboard> with SingleTickerProvid
     if (mounted) {
       Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (_) => const AuthPage()), (route) => false);
     }
+  }
+
+  void _assignTeacherRole(String uid, String email) async {
+    final institutions = await _db.collection('institutions').get();
+    final primaryColor = Theme.of(context).colorScheme.primary;
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1C2C),
+        title: Text('Выбрать заведение для $email', style: const TextStyle(fontSize: 18)),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: institutions.docs.isEmpty 
+            ? const Text('Список заведений пуст. Сначала добавьте их во вкладке "Заведения".')
+            : ListView.builder(
+                shrinkWrap: true,
+                itemCount: institutions.docs.length,
+                itemBuilder: (context, index) {
+                  final inst = institutions.docs[index].data();
+                  final instId = institutions.docs[index].id;
+                  return ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.school, color: primaryColor),
+                    title: Text(inst['name'], style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    subtitle: Text(inst['type'] == 'school' ? 'Школа' : 'Колледж', style: const TextStyle(color: Colors.white54)),
+                    onTap: () {
+                      _db.collection('users').doc(uid).update({
+                        'role': 'teacher',
+                        'institutionId': instId,
+                        'institutionName': inst['name'],
+                      });
+                      Navigator.pop(context);
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Учитель $email прикреплен к ${inst['name']}')));
+                    },
+                  );
+                },
+              ),
+        ),
+        actions: [TextButton(onPressed: () => Navigator.pop(context), child: Text('Отмена', style: TextStyle(color: primaryColor)))],
+      ),
+    );
   }
 
   Widget _buildGlassCard({required Widget child, double opacity = 0.05, double blur = 10}) {
@@ -66,6 +109,8 @@ class _AdminDashboardState extends State<AdminDashboard> with SingleTickerProvid
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final primaryColor = Theme.of(context).colorScheme.primary;
+
     return Scaffold(
       extendBodyBehindAppBar: true,
       appBar: AppBar(
@@ -76,8 +121,8 @@ class _AdminDashboardState extends State<AdminDashboard> with SingleTickerProvid
         actions: [IconButton(icon: const Icon(Icons.logout_rounded, color: Colors.redAccent), onPressed: _logout)],
         bottom: TabBar(
           controller: _tabController,
-          indicatorColor: Colors.amber,
-          labelColor: Colors.amber,
+          indicatorColor: primaryColor,
+          labelColor: primaryColor,
           unselectedLabelColor: Colors.white54,
           tabs: const [
             Tab(icon: Icon(Icons.people_alt_rounded), text: 'Люди'),
@@ -112,6 +157,7 @@ class _AdminDashboardState extends State<AdminDashboard> with SingleTickerProvid
   }
 
   Widget _buildUsersTab() {
+    final primaryColor = Theme.of(context).colorScheme.primary;
     return Column(
       children: [
         Padding(
@@ -124,7 +170,7 @@ class _AdminDashboardState extends State<AdminDashboard> with SingleTickerProvid
                   controller: _searchController,
                   onChanged: (val) => setState(() => _searchQuery = val.toLowerCase()),
                   style: const TextStyle(color: Colors.white),
-                  decoration: const InputDecoration(hintText: 'Поиск пользователя...', hintStyle: TextStyle(color: Colors.white24), prefixIcon: Icon(Icons.search, color: Colors.amber), border: InputBorder.none),
+                  decoration: InputDecoration(hintText: 'Поиск пользователя...', hintStyle: const TextStyle(color: Colors.white24), prefixIcon: Icon(Icons.search, color: primaryColor), border: InputBorder.none),
                 ),
                 const SizedBox(height: 8),
                 SingleChildScrollView(
@@ -146,7 +192,7 @@ class _AdminDashboardState extends State<AdminDashboard> with SingleTickerProvid
           child: StreamBuilder<QuerySnapshot>(
             stream: _db.collection('users').snapshots(),
             builder: (context, snapshot) {
-              if (!snapshot.hasData) return const Center(child: CircularProgressIndicator(color: Colors.amber));
+              if (!snapshot.hasData) return Center(child: CircularProgressIndicator(color: primaryColor));
               var users = snapshot.data!.docs;
               users = users.where((doc) {
                 final data = doc.data() as Map<String, dynamic>;
@@ -162,17 +208,31 @@ class _AdminDashboardState extends State<AdminDashboard> with SingleTickerProvid
                   final uid = users[index].id;
                   final role = data['role'] ?? 'student';
                   final email = data['email'] ?? 'No Email';
+                  final instName = data['institutionName'] ?? '';
+                  
                   return Padding(
                     padding: const EdgeInsets.only(bottom: 12),
                     child: _buildGlassCard(
                       child: ListTile(
                         title: Text(email, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                        subtitle: Text('Роль: ${role.toUpperCase()}', style: TextStyle(color: _getRoleColor(role), fontSize: 12, fontWeight: FontWeight.bold)),
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Роль: ${role.toUpperCase()}', style: TextStyle(color: _getRoleColor(role), fontSize: 11, fontWeight: FontWeight.bold)),
+                            if (role == 'teacher' && instName.isNotEmpty)
+                              Text('Заведение: $instName', style: const TextStyle(color: Colors.white38, fontSize: 10)),
+                          ],
+                        ),
                         trailing: PopupMenuButton<String>(
-                          icon: const Icon(Icons.manage_accounts, color: Colors.amber),
+                          icon: Icon(Icons.manage_accounts, color: primaryColor),
                           onSelected: (newRole) {
-                            if (newRole == 'delete') _confirmDeleteUser(uid, email);
-                            else _db.collection('users').doc(uid).update({'role': newRole});
+                            if (newRole == 'delete') {
+                              _confirmDeleteUser(uid, email);
+                            } else if (newRole == 'teacher') {
+                              _assignTeacherRole(uid, email);
+                            } else {
+                              _db.collection('users').doc(uid).update({'role': newRole, 'institutionId': null, 'institutionName': null});
+                            }
                           },
                           itemBuilder: (context) => [
                             const PopupMenuItem(value: 'student', child: Text('Сделать Студентом')),
@@ -196,13 +256,15 @@ class _AdminDashboardState extends State<AdminDashboard> with SingleTickerProvid
 
   Widget _buildFilterChip(String value, {String? label}) {
     bool isSelected = _selectedRoleFilter == value;
+    final primaryColor = Theme.of(context).colorScheme.primary;
     return Padding(
       padding: const EdgeInsets.only(right: 8),
-      child: ChoiceChip(label: Text(label ?? value.toUpperCase(), style: TextStyle(fontSize: 11, color: isSelected ? Colors.black : Colors.white70)), selected: isSelected, onSelected: (selected) { if (selected) setState(() => _selectedRoleFilter = value); }, selectedColor: Colors.amber, backgroundColor: Colors.white10),
+      child: ChoiceChip(label: Text(label ?? value.toUpperCase(), style: TextStyle(fontSize: 11, color: isSelected ? Colors.black : Colors.white70)), selected: isSelected, onSelected: (selected) { if (selected) setState(() => _selectedRoleFilter = value); }, selectedColor: primaryColor, backgroundColor: Colors.white10),
     );
   }
 
   Widget _buildInstitutionsTab() {
+    final primaryColor = Theme.of(context).colorScheme.primary;
     return Column(
       children: [
         Padding(
@@ -211,14 +273,14 @@ class _AdminDashboardState extends State<AdminDashboard> with SingleTickerProvid
             onPressed: _showAddInstitutionDialog,
             icon: const Icon(Icons.add, color: Colors.black),
             label: const Text('Добавить заведение', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.amber, minimumSize: const Size(double.infinity, 55), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
+            style: ElevatedButton.styleFrom(backgroundColor: primaryColor, minimumSize: const Size(double.infinity, 55), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
           ),
         ),
         Expanded(
           child: StreamBuilder<QuerySnapshot>(
             stream: _db.collection('institutions').snapshots(),
             builder: (context, snapshot) {
-              if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+              if (!snapshot.hasData) return Center(child: CircularProgressIndicator(color: primaryColor));
               final docs = snapshot.data!.docs;
               return ListView.builder(
                 padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -229,7 +291,7 @@ class _AdminDashboardState extends State<AdminDashboard> with SingleTickerProvid
                     padding: const EdgeInsets.only(bottom: 12),
                     child: _buildGlassCard(
                       child: ListTile(
-                        leading: Container(padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: Colors.amber.withOpacity(0.1), shape: BoxShape.circle), child: const Icon(Icons.school, color: Colors.amber)),
+                        leading: Container(padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: primaryColor.withOpacity(0.1), shape: BoxShape.circle), child: Icon(Icons.school, color: primaryColor)),
                         title: Text(inst['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
                         subtitle: Text(inst['type'] == 'school' ? 'Школа' : 'Колледж', style: const TextStyle(color: Colors.white54)),
                         trailing: IconButton(icon: const Icon(Icons.delete_sweep_outlined, color: Colors.redAccent), onPressed: () => _db.collection('institutions').doc(docs[index].id).delete()),
@@ -246,6 +308,7 @@ class _AdminDashboardState extends State<AdminDashboard> with SingleTickerProvid
   }
 
   Widget _buildAnnouncementsTab() {
+    final primaryColor = Theme.of(context).colorScheme.primary;
     return Padding(
       padding: const EdgeInsets.all(20),
       child: Column(
@@ -277,7 +340,7 @@ class _AdminDashboardState extends State<AdminDashboard> with SingleTickerProvid
             },
             icon: const Icon(Icons.send_rounded, color: Colors.black),
             label: const Text('Опубликовать', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.amber, minimumSize: const Size(double.infinity, 55), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
+            style: ElevatedButton.styleFrom(backgroundColor: primaryColor, minimumSize: const Size(double.infinity, 55), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
           ),
           const SizedBox(height: 12),
           TextButton(onPressed: () => _db.collection('system').doc('announcement').update({'active': false}), child: const Center(child: Text('Убрать текущее объявление', style: TextStyle(color: Colors.redAccent)))),
@@ -293,7 +356,8 @@ class _AdminDashboardState extends State<AdminDashboard> with SingleTickerProvid
   void _showAddInstitutionDialog() {
     final nameCtrl = TextEditingController();
     String type = 'school';
-    showDialog(context: context, builder: (context) => StatefulBuilder(builder: (context, setDialogState) => AlertDialog(backgroundColor: const Color(0xFF1A1C2C), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)), title: const Text('Новое заведение'), content: Column(mainAxisSize: MainAxisSize.min, children: [TextField(controller: nameCtrl, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: 'Название', labelStyle: TextStyle(color: Colors.white54))), const SizedBox(height: 10), DropdownButton<String>(value: type, dropdownColor: const Color(0xFF1A1C2C), isExpanded: true, items: const [DropdownMenuItem(value: 'school', child: Text('Школа', style: TextStyle(color: Colors.white))), DropdownMenuItem(value: 'college', child: Text('Колледж', style: TextStyle(color: Colors.white)))], onChanged: (v) => setDialogState(() => type = v!))]), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')), ElevatedButton(onPressed: () { if (nameCtrl.text.isNotEmpty) { _db.collection('institutions').add({'name': nameCtrl.text, 'type': type}); Navigator.pop(context); } }, style: ElevatedButton.styleFrom(backgroundColor: Colors.amber), child: const Text('Добавить', style: TextStyle(color: Colors.black)))])));
+    final primaryColor = Theme.of(context).colorScheme.primary;
+    showDialog(context: context, builder: (context) => StatefulBuilder(builder: (context, setDialogState) => AlertDialog(backgroundColor: const Color(0xFF1A1C2C), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)), title: const Text('Новое заведение'), content: Column(mainAxisSize: MainAxisSize.min, children: [TextField(controller: nameCtrl, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: 'Название', labelStyle: TextStyle(color: Colors.white54))), const SizedBox(height: 10), DropdownButton<String>(value: type, dropdownColor: const Color(0xFF1A1C2C), isExpanded: true, items: const [DropdownMenuItem(value: 'school', child: Text('Школа', style: TextStyle(color: Colors.white))), DropdownMenuItem(value: 'college', child: Text('Колледж', style: TextStyle(color: Colors.white)))], onChanged: (v) => setDialogState(() => type = v!))]), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')), ElevatedButton(onPressed: () { if (nameCtrl.text.isNotEmpty) { _db.collection('institutions').add({'name': nameCtrl.text, 'type': type}); Navigator.pop(context); } }, style: ElevatedButton.styleFrom(backgroundColor: primaryColor), child: const Text('Добавить', style: TextStyle(color: Colors.black)))])));
   }
 
   Color _getRoleColor(String role) {
