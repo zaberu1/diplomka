@@ -1,13 +1,15 @@
 // lib/screens/schedule/bell_schedule_page.dart
 import 'package:flutter/material.dart';
 import 'dart:ui';
+import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../../widgets/app_drawer.dart';
 import '../../utils/helpers.dart';
 import '../../models/lesson_model.dart';
 import '../../services/history_service.dart';
+import '../../services/database_service.dart';
+import '../../services/shared_prefs_service.dart';
+import '../../services/notification_service.dart';
 import 'edit_lesson_page.dart';
 import '../profile/profile_page.dart';
 
@@ -24,103 +26,170 @@ class _BellSchedulePageState extends State<BellSchedulePage> with SingleTickerPr
   Map<String, List<Lesson>> weeklySchedule = {};
   bool sameEveryday = true;
   bool isReadOnly = false; 
-  final user = FirebaseAuth.instance.currentUser;
   late TabController _tabController;
+  StreamSubscription? _weeklySubscription;
 
-  final List<String> daysLong = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'];
-  final List<String> daysShort = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
+  final List<String> daysLong = const ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'];
+  final List<String> daysShort = const ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
+
+  bool isSaving = false;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: daysLong.length, vsync: this);
-    _tabController.addListener(() => setState(() {})); // Обновляем UI при смене таба
+    _tabController.addListener(() {
+      if (!_tabController.indexIsChanging) setState(() {});
+    });
     _loadSettingsAndSchedule();
   }
 
   @override
   void dispose() {
     _tabController.dispose();
+    _weeklySubscription?.cancel();
     super.dispose();
   }
 
   Future<void> _loadSettingsAndSchedule() async {
-    if (user == null) return;
-    final userDoc = await FirebaseFirestore.instance.collection('users').doc(user!.uid).get();
-    final userData = userDoc.data() ?? {};
-    final appMode = userData['appMode'] ?? 'manual';
-    final groupId = userData['groupId'];
+    try {
+      final userDataDoc = await databaseService.getUserData();
+      final userData = userDataDoc.data() as Map<String, dynamic>? ?? {};
+      final appMode = userData['appMode'] ?? 'manual';
+      final groupId = userData['groupId'];
 
-    if (appMode == 'join' && groupId != null) {
-      isReadOnly = true;
-      sameEveryday = false;
-      final groupDoc = await FirebaseFirestore.instance.collection('groups').doc(groupId).get();
-      if (groupDoc.exists) {
-        final data = groupDoc.data()!['schedule'] as Map<String, dynamic>? ?? {};
-        for (int i = 0; i < daysLong.length; i++) {
-          final dayLessons = (data[i.toString()] ?? []) as List;
-          weeklySchedule[daysLong[i]] = dayLessons.map((e) => Lesson.fromMap(e)).toList();
+      _weeklySubscription?.cancel();
+
+      if (appMode == 'join' && groupId != null) {
+        isReadOnly = true;
+        sameEveryday = false;
+        
+        _weeklySubscription = databaseService.getGroupWeeklyScheduleStream(groupId).listen((newWeekly) {
+          if (mounted) {
+            setState(() {
+              weeklySchedule = newWeekly;
+              // Планируем уведомления для группы в фоне
+              final allLessons = newWeekly.values.expand((x) => x).toList();
+              NotificationService.scheduleNotifications(allLessons);
+            });
+          }
+        });
+      } else {
+        isReadOnly = false;
+        sameEveryday = SharedPrefsService.getScheduleMode();
+        if (sameEveryday) {
+          schedule = await databaseService.getSchedule(widget.place, isWeekly: false);
+          NotificationService.scheduleNotifications(schedule);
+        } else {
+          weeklySchedule = await databaseService.getFullWeeklySchedule(widget.place);
+          final allLessons = weeklySchedule.values.expand((x) => x).toList();
+          NotificationService.scheduleNotifications(allLessons);
         }
       }
-    } else {
-      final prefs = await SharedPreferences.getInstance();
-      sameEveryday = prefs.getBool('same_schedule') ?? true;
-      if (sameEveryday) await _loadSchedule(); else await _loadWeeklySchedule();
+    } catch (e) {
+      debugPrint('Error loading schedule: $e');
     }
     if (mounted) setState(() {});
   }
 
-  Future<void> _loadSchedule() async {
-    final doc = await FirebaseFirestore.instance.collection('users').doc(user!.uid).collection('schedules').doc(widget.place).get();
-    if (doc.exists) {
-      final items = doc.data()?['items'];
-      if (items is List) schedule = items.map((item) => Lesson.fromMap(item)).toList();
+  Future<void> _addLesson(Lesson newLesson) async {
+    if (isReadOnly || isSaving) return;
+    
+    final day = sameEveryday ? null : daysLong[_tabController.index];
+    
+    setState(() { 
+      if (sameEveryday) { 
+        schedule.add(newLesson); 
+        schedule.sort((a, b) => compareTime(a.start, b.start)); 
+      } else { 
+        final d = day!;
+        weeklySchedule[d] ??= []; 
+        weeklySchedule[d]!.add(newLesson); 
+        weeklySchedule[d]!.sort((a, b) => compareTime(a.start, b.start)); 
+      } 
+    });
+
+    try {
+      // Сохраняем в облако БЕЗ блокировки интерфейса на долгое время
+      databaseService.saveSchedule(
+        widget.place, 
+        sameEveryday ? schedule : weeklySchedule[day]!, 
+        isWeekly: !sameEveryday,
+        day: day
+      );
+      
+      // Планируем уведомления асинхронно
+      final allLessons = sameEveryday ? schedule : weeklySchedule.values.expand((x) => x).toList();
+      NotificationService.scheduleNotifications(allLessons);
+      
+      HistoryService.addHistoryEntry(action: 'added', lessonName: newLesson.name, place: widget.place);
+    } catch (e) {
+      debugPrint('Save error: $e');
     }
   }
 
-  Future<void> _loadWeeklySchedule() async {
-    final doc = await FirebaseFirestore.instance.collection('users').doc(user!.uid).collection('schedules').doc('${widget.place}_weekly').get();
-    if (doc.exists) {
-      final daysData = doc.data()?['days'] as Map<String, dynamic>? ?? {};
-      weeklySchedule = Map<String, List<Lesson>>.fromEntries(daysData.entries.map((entry) => MapEntry(entry.key, (entry.value as List).map((e) => Lesson.fromMap(e)).toList())));
+  Future<void> _editLesson(int index, Lesson updated) async {
+    if (isReadOnly || isSaving) return;
+    
+    final day = sameEveryday ? null : daysLong[_tabController.index];
+
+    setState(() {
+      if (sameEveryday) { 
+        schedule[index] = updated; 
+        schedule.sort((a, b) => compareTime(a.start, b.start)); 
+      } else { 
+        final d = day!;
+        weeklySchedule[d]![index] = updated; 
+        weeklySchedule[d]!.sort((a, b) => compareTime(a.start, b.start)); 
+      }
+    });
+
+    try {
+      databaseService.saveSchedule(
+        widget.place, 
+        sameEveryday ? schedule : weeklySchedule[day]!, 
+        isWeekly: !sameEveryday,
+        day: day
+      );
+      
+      final allLessons = sameEveryday ? schedule : weeklySchedule.values.expand((x) => x).toList();
+      NotificationService.scheduleNotifications(allLessons);
+      
+      HistoryService.addHistoryEntry(action: 'edited', lessonName: updated.name, place: widget.place);
+    } catch (e) {
+      debugPrint('Save error: $e');
     }
   }
 
-  Future<void> _saveSchedule() async {
-    if (user == null || isReadOnly) return;
-    await FirebaseFirestore.instance.collection('users').doc(user!.uid).collection('schedules').doc(widget.place).set({'items': schedule.map((l) => l.toMap()).toList()});
-  }
+  Future<void> _deleteLesson(int index) async {
+    if (isReadOnly || isSaving) return;
+    
+    final day = sameEveryday ? null : daysLong[_tabController.index];
+    final lesson = sameEveryday ? schedule[index] : weeklySchedule[day]![index];
 
-  Future<void> _saveWeeklySchedule() async {
-    if (user == null || isReadOnly) return;
-    await FirebaseFirestore.instance.collection('users').doc(user!.uid).collection('schedules').doc('${widget.place}_weekly').set({'days': Map.fromEntries(weeklySchedule.entries.map((e) => MapEntry(e.key, e.value.map((l) => l.toMap()).toList())))});
-  }
-
-  Future<void> _addLesson(Lesson newLesson, [String? day]) async {
-    if (isReadOnly) return;
-    setState(() { if (sameEveryday) { schedule.add(newLesson); schedule.sort((a, b) => compareTime(a.start, b.start)); } else { final d = day ?? daysLong[_tabController.index]; weeklySchedule[d] ??= []; weeklySchedule[d]!.add(newLesson); weeklySchedule[d]!.sort((a, b) => compareTime(a.start, b.start)); } });
-    await HistoryService.addHistoryEntry(action: 'added', lessonName: newLesson.name, place: widget.place);
-    sameEveryday ? await _saveSchedule() : await _saveWeeklySchedule();
-  }
-
-  Future<void> _editLesson(int index, Lesson updated, [String? day]) async {
-    if (isReadOnly) return;
     setState(() {
-      if (sameEveryday) { schedule[index] = updated; schedule.sort((a, b) => compareTime(a.start, b.start)); } 
-      else { final d = day ?? daysLong[_tabController.index]; weeklySchedule[d]![index] = updated; weeklySchedule[d]!.sort((a, b) => compareTime(a.start, b.start)); }
+      if (sameEveryday) {
+        schedule.removeAt(index);
+      } else {
+        weeklySchedule[day]!.removeAt(index);
+      }
     });
-    await HistoryService.addHistoryEntry(action: 'edited', lessonName: updated.name, place: widget.place);
-    sameEveryday ? await _saveSchedule() : await _saveWeeklySchedule();
-  }
 
-  Future<void> _deleteLesson(int index, [String? day]) async {
-    if (isReadOnly) return;
-    final lesson = sameEveryday ? schedule[index] : weeklySchedule[day ?? daysLong[_tabController.index]]![index];
-    setState(() {
-      sameEveryday ? schedule.removeAt(index) : weeklySchedule[day ?? daysLong[_tabController.index]]!.removeAt(index);
-    });
-    await HistoryService.addHistoryEntry(action: 'deleted', lessonName: lesson.name, place: widget.place);
-    sameEveryday ? await _saveSchedule() : await _saveWeeklySchedule();
+    try {
+      databaseService.saveSchedule(
+        widget.place, 
+        sameEveryday ? schedule : weeklySchedule[day]!, 
+        isWeekly: !sameEveryday,
+        day: day
+      );
+      
+      final allLessons = sameEveryday ? schedule : weeklySchedule.values.expand((x) => x).toList();
+      NotificationService.scheduleNotifications(allLessons);
+      
+      HistoryService.addHistoryEntry(action: 'deleted', lessonName: lesson.name, place: widget.place);
+    } catch (e) {
+      debugPrint('Delete error: $e');
+    }
   }
 
   Widget _buildGlassCard({required Widget child, double opacity = 0.05}) {
@@ -159,7 +228,7 @@ class _BellSchedulePageState extends State<BellSchedulePage> with SingleTickerPr
         centerTitle: true,
         actions: [_buildUserAvatar(context), const SizedBox(width: 16)],
       ),
-      floatingActionButton: isReadOnly ? null : FloatingActionButton.extended(
+      floatingActionButton: (isReadOnly) ? null : FloatingActionButton.extended(
         onPressed: () async {
           final res = await Navigator.push(context, MaterialPageRoute(builder: (_) => const EditLessonPage(name: '', start: '08:00', end: '08:45')));
           if (res != null && mounted) await _addLesson(res);
@@ -189,12 +258,17 @@ class _BellSchedulePageState extends State<BellSchedulePage> with SingleTickerPr
                     ? _buildScheduleList(schedule) 
                     : TabBarView(
                         controller: _tabController, 
-                        children: [for (var d in daysLong) _buildScheduleList(weeklySchedule[d] ?? [], d)]
+                        children: daysLong.map((d) => _buildScheduleList(weeklySchedule[d] ?? [], d)).toList(),
                       ),
                 ),
               ],
             ),
           ),
+          if (isSaving)
+            Container(
+              color: Colors.black45,
+              child: const Center(child: CircularProgressIndicator(color: Colors.amber)),
+            ),
         ],
       ),
     );
@@ -298,21 +372,21 @@ class _BellSchedulePageState extends State<BellSchedulePage> with SingleTickerPr
                 ElevatedButton(onPressed: () => Navigator.pop(context, true), style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent), child: const Text('УДАЛИТЬ')),
               ],
             )),
-            onDismissed: (_) => _deleteLesson(index, day),
-            child: _buildLessonCard(lesson, lessonColor, isDark, day),
+            onDismissed: (_) => _deleteLesson(index),
+            child: _buildLessonCard(lesson, lessonColor, isDark, day, index),
           ),
         );
       },
     );
   }
 
-  Widget _buildLessonCard(Lesson lesson, Color accent, bool isDark, String? day) {
+  Widget _buildLessonCard(Lesson lesson, Color accent, bool isDark, String? day, int index) {
     return _buildGlassCard(
       opacity: 0.06,
       child: InkWell(
-        onTap: isReadOnly ? null : () async {
+        onTap: (isReadOnly) ? null : () async {
           final res = await Navigator.push(context, MaterialPageRoute(builder: (_) => EditLessonPage(name: lesson.name, start: lesson.start, end: lesson.end, room: lesson.room, homework: lesson.homework, color: Color(lesson.colorValue))));
-          if (res != null && mounted) await _editLesson(weeklySchedule[day]!.indexOf(lesson), res, day);
+          if (res != null && mounted) await _editLesson(index, res);
         },
         borderRadius: BorderRadius.circular(24),
         child: Padding(

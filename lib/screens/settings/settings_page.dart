@@ -1,8 +1,13 @@
 // lib/screens/settings/settings_page.dart
 import 'package:flutter/material.dart';
 import 'dart:ui';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../../app/theme_controller.dart';
+import '../../services/shared_prefs_service.dart';
+import '../../services/database_service.dart';
+import 'notification_settings_page.dart';
+import '../setup/app_mode_selection_page.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -13,9 +18,10 @@ class SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<SettingsPage> {
   bool _use24Hour = true;
-  bool _notifications = true;
+  String _userRole = 'student';
+  bool _isLoading = true;
 
-  final List<Color> _availableColors = [
+  final List<Color> _availableColors = const [
     Colors.amber,
     Colors.blue,
     Colors.green,
@@ -26,21 +32,63 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   void initState() {
     super.initState();
-    _loadSettings();
+    _loadAll();
   }
 
-  Future<void> _loadSettings() async {
-    final prefs = await SharedPreferences.getInstance();
-    setState(() {
-      _use24Hour = prefs.getBool('use_24hour_format') ?? true;
-      _notifications = prefs.getBool('notifications_enabled') ?? true;
-    });
+  Future<void> _loadAll() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null) {
+      final doc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
+      if (mounted) {
+        setState(() {
+          _userRole = doc.data()?['role'] ?? 'student';
+          _use24Hour = SharedPrefsService.getUse24HourFormat();
+          _isLoading = false;
+        });
+      }
+    }
   }
 
-  Future<void> _toggle24Hour(bool val) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('use_24hour_format', val);
+  void _toggle24Hour(bool val) {
+    SharedPrefsService.setBool('use_24hour_format', val);
     setState(() => _use24Hour = val);
+  }
+
+  void _resetAndReconfigure() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1C2C),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: const Text('Сбросить настройки?', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        content: const Text('Вы перейдете к выбору режима работы (Ручной ввод или Подключение к заведению).', style: TextStyle(color: Colors.white70)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Отмена', style: TextStyle(color: Colors.white38)),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              await databaseService.updateUserData({
+                'appMode': null,
+                'institutionId': null,
+                'setupCompleted': false,
+                'groupId': null,
+              });
+              if (context.mounted) {
+                Navigator.pushAndRemoveUntil(
+                  context, 
+                  MaterialPageRoute(builder: (_) => const AppModeSelectionPage()),
+                  (route) => false,
+                );
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.amber, foregroundColor: Colors.black),
+            child: const Text('Продолжить'),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildGlassCard({required Widget child, double opacity = 0.05}) {
@@ -64,7 +112,13 @@ class _SettingsPageState extends State<SettingsPage> {
 
   @override
   Widget build(BuildContext context) {
+    if (_isLoading) return const Scaffold(body: Center(child: CircularProgressIndicator(color: Colors.amber)));
+    
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final primaryColor = Theme.of(context).colorScheme.primary;
+    final bool isTeacher = _userRole == 'teacher';
+    final bool isAdmin = _userRole == 'admin';
+    final bool isStaff = isTeacher || isAdmin;
 
     return Scaffold(
       extendBodyBehindAppBar: true,
@@ -93,7 +147,6 @@ class _SettingsPageState extends State<SettingsPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // СЕКЦИЯ: ТЕМА
                   const Text('ОФОРМЛЕНИЕ', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2, color: Colors.white54)),
                   const SizedBox(height: 12),
                   _buildGlassCard(
@@ -155,25 +208,46 @@ class _SettingsPageState extends State<SettingsPage> {
 
                   const SizedBox(height: 32),
 
-                  // СЕКЦИЯ: ПРИЛОЖЕНИЕ
                   const Text('ПРИЛОЖЕНИЕ', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2, color: Colors.white54)),
                   const SizedBox(height: 12),
                   _buildGlassCard(
                     child: Column(
                       children: [
                         ListTile(
-                          leading: const Icon(Icons.access_time_rounded, color: Colors.white70),
+                          leading: Icon(Icons.access_time_rounded, color: isDark ? Colors.white70 : Colors.black87),
                           title: const Text('24-часовой формат'),
-                          trailing: Switch(value: _use24Hour, onChanged: _toggle24Hour),
+                          trailing: Switch(
+                            value: _use24Hour, 
+                            onChanged: _toggle24Hour,
+                            activeColor: primaryColor,
+                          ),
                           contentPadding: EdgeInsets.zero,
                         ),
-                        const Divider(color: Colors.white10),
-                        ListTile(
-                          leading: const Icon(Icons.notifications_active_rounded, color: Colors.white70),
-                          title: const Text('Уведомления'),
-                          trailing: Switch(value: _notifications, onChanged: (v) => setState(() => _notifications = v)),
-                          contentPadding: EdgeInsets.zero,
-                        ),
+                        
+                        // СКРЫВАЕМ УВЕДОМЛЕНИЯ ДЛЯ УЧИТЕЛЯ И АДМИНА
+                        if (!isStaff) ...[
+                          const Divider(color: Colors.white10),
+                          ListTile(
+                            leading: Icon(Icons.notifications_active_rounded, color: isDark ? Colors.white70 : Colors.black87),
+                            title: const Text('Настроить уведомления'),
+                            trailing: Icon(Icons.chevron_right_rounded, color: isDark ? Colors.white24 : Colors.black26),
+                            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const NotificationSettingsPage())),
+                            contentPadding: EdgeInsets.zero,
+                          ),
+                        ],
+                        
+                        // СКРЫВАЕМ СБРОС НАСТРОЕК ДЛЯ УЧИТЕЛЯ И АДМИНА
+                        if (!isStaff) ...[
+                          const Divider(color: Colors.white10),
+                          ListTile(
+                            leading: Icon(Icons.restart_alt_rounded, color: isDark ? Colors.white70 : Colors.black87),
+                            title: const Text('Перенастроить приложение'),
+                            subtitle: const Text('Смена режима работы и заведения', style: TextStyle(fontSize: 11, color: Colors.white38)),
+                            trailing: Icon(Icons.chevron_right_rounded, color: isDark ? Colors.white24 : Colors.black26),
+                            onTap: _resetAndReconfigure,
+                            contentPadding: EdgeInsets.zero,
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -181,7 +255,9 @@ class _SettingsPageState extends State<SettingsPage> {
                   const SizedBox(height: 40),
                   Center(
                     child: Text(
-                      'ZvonOK v1.1.0\nЛицензия студента',
+                      isTeacher 
+                        ? 'ZvonOK Professional Console\nЛицензия преподавателя' 
+                        : (isAdmin ? 'ZvonOK System Control\nЛицензия администратора' : 'ZvonOK Standard\nЛицензия студента'),
                       textAlign: TextAlign.center,
                       style: TextStyle(color: isDark ? Colors.white24 : Colors.black26, fontSize: 12),
                     ),

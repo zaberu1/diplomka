@@ -2,10 +2,13 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'dart:ui';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../widgets/app_drawer.dart';
+import '../../../services/database_service.dart';
+import '../../../services/shared_prefs_service.dart';
+import '../../../services/notification_service.dart';
+import '../../../models/lesson_model.dart';
 import 'bell_schedule_page.dart';
 import '../profile/profile_page.dart';
 
@@ -23,6 +26,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   String? nextLesson;
   String? remainingTime;
   Timer? _timer;
+  StreamSubscription? _scheduleSubscription;
   bool isLoading = true;
   bool isPending = false; 
   bool _use24Hour = true;
@@ -32,106 +36,136 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   @override
   void initState() {
     super.initState();
-    _loadData();
     _pulseController = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat(reverse: true);
+    
+    // ОБНОВЛЯЕМ ВРЕМЯ ПОСЛЕДНЕГО ВИЗИТА ДЛЯ СИНХРОНИЗАЦИИ АДМИНКИ
+    databaseService.updateLastSeen();
+
+    // МГНОВЕННАЯ ЗАГРУЗКА ИЗ КЭША
+    _loadFromCache();
+    
+    _loadData(showLoader: schedule.isEmpty);
   }
 
-  Future<void> _loadData() async {
-    await _loadSettings();
-    await _loadSchedule();
-    await _loadNote();
+  void _loadFromCache() {
+    final cached = SharedPrefsService.getCachedSchedule();
+    if (cached.isNotEmpty) {
+      setState(() {
+        schedule = cached;
+        isLoading = false;
+        _updateNow();
+      });
+    }
+  }
+
+  Future<void> _loadData({bool showLoader = false}) async {
+    if (!mounted) return;
+    if (showLoader) setState(() => isLoading = true);
+    
+    try {
+      _loadSettings();
+      _loadNote();
+      await _initScheduleListener();
+    } catch (e) {
+      debugPrint('Error in _loadData: $e');
+    } finally {
+      if (mounted && showLoader) {
+        setState(() => isLoading = false);
+      }
+    }
   }
 
   @override
   void dispose() {
     _timer?.cancel();
+    _scheduleSubscription?.cancel();
     _pulseController?.dispose();
     _noteController.dispose();
     super.dispose();
   }
 
-  Future<void> _loadSettings() async {
-    final prefs = await SharedPreferences.getInstance();
+  void _loadSettings() {
+    if (!mounted) return;
     setState(() {
-      _use24Hour = prefs.getBool('use_24hour_format') ?? true;
+      _use24Hour = SharedPrefsService.getUse24HourFormat();
     });
   }
 
-  Future<void> _loadNote() async {
-    final prefs = await SharedPreferences.getInstance();
-    setState(() { _noteController.text = prefs.getString('quick_note') ?? ''; });
+  void _loadNote() {
+    if (!mounted) return;
+    setState(() { 
+      _noteController.text = SharedPrefsService.getQuickNote(); 
+    });
   }
 
-  Future<void> _saveNote(String val) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('quick_note', val);
+  void _saveNote(String val) {
+    SharedPrefsService.setQuickNote(val);
   }
 
   Future<void> _cancelRequest() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-    final reqs = await FirebaseFirestore.instance.collection('requests').where('studentId', isEqualTo: user.uid).get();
-    for (var doc in reqs.docs) { await doc.reference.delete(); }
-    await FirebaseFirestore.instance.collection('users').doc(user.uid).update({
-      'pendingRequest': false,
-      'appMode': 'manual',
-    });
-    _loadData();
+    try {
+      setState(() => isLoading = true);
+      await databaseService.cancelJoinRequest();
+      await _loadData(showLoader: true);
+    } catch (e) {
+      debugPrint('Error canceling request: $e');
+    } finally {
+      if (mounted) setState(() => isLoading = false);
+    }
   }
 
-  Future<void> _loadSchedule() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) { setState(() => isLoading = false); return; }
-
+  Future<void> _initScheduleListener() async {
     try {
-      final userDoc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
-      final userData = userDoc.data() ?? {};
+      final userDataDoc = await databaseService.getUserData();
+      final userData = userDataDoc.data() as Map<String, dynamic>? ?? {};
+      
       if (userData['pendingRequest'] == true) {
-        setState(() { isPending = true; isLoading = false; });
+        if (mounted) setState(() { isPending = true; isLoading = false; });
         return;
-      } else { setState(() => isPending = false); }
+      } else { 
+        if (mounted) setState(() => isPending = false); 
+      }
 
       final appMode = userData['appMode'] ?? 'manual';
       final groupId = userData['groupId'];
 
+      _scheduleSubscription?.cancel();
+
       if (appMode == 'join' && groupId != null) {
-        final groupDoc = await FirebaseFirestore.instance.collection('groups').doc(groupId).get();
-        if (groupDoc.exists) {
-          final groupData = groupDoc.data()!;
-          final rawSchedule = groupData['schedule'];
-          Map<String, dynamic> scheduleMap = (rawSchedule is Map) ? Map<String, dynamic>.from(rawSchedule) : {};
-          final todayIndex = (DateTime.now().weekday - 1).toString();
-          final todayLessons = (scheduleMap[todayIndex] ?? []) as List;
-          schedule = todayLessons.map((e) => {
-            'name': e['name'] ?? 'Урок',
-            'start': _normalizeTime(e['start'] ?? '08:00'),
-            'end': _normalizeTime(e['end'] ?? '08:45'),
-            'time': '${e['start']} - ${e['end']}',
-          }).toList();
-        }
+        _scheduleSubscription = databaseService.getGroupScheduleStream(groupId).listen((newSchedule) {
+          _updateInternalSchedule(newSchedule);
+        });
       } else {
-        final prefs = await SharedPreferences.getInstance();
-        final sameEveryday = prefs.getBool('same_schedule') ?? true;
-        final doc = await FirebaseFirestore.instance.collection('users').doc(user.uid).collection('schedules').doc(sameEveryday ? widget.place : '${widget.place}_weekly').get();
-        if (doc.exists) {
-          if (sameEveryday) {
-            schedule = (doc.data()!['items'] as List).map((e) => {
-              'name': e['name'], 'start': _normalizeTime(e['start']), 'end': _normalizeTime(e['end']), 'time': '${e['start']} - ${e['end']}',
-            }).toList();
-          } else {
-            final data = doc.data()!['days'] as Map<String, dynamic>;
-            final today = _getDayName(DateTime.now());
-            final todayLessons = (data[today] ?? []) as List;
-            schedule = todayLessons.map((e) => {
-              'name': e['name'], 'start': _normalizeTime(e['start']), 'end': _normalizeTime(e['end']), 'time': '${e['start']} - ${e['end']}',
-            }).toList();
-          }
-        }
+        final sameEveryday = SharedPrefsService.getScheduleMode();
+        _scheduleSubscription = databaseService.getScheduleStream(widget.place, isWeekly: !sameEveryday).listen((lessonList) {
+          final newSchedule = lessonList.map((l) => l.toMap()).toList();
+          _updateInternalSchedule(newSchedule);
+        });
       }
-    } catch (e) { debugPrint('Ошибка загрузки: $e'); }
-    _updateNow();
-    _timer = Timer.periodic(const Duration(seconds: 30), (_) => _updateNow());
-    setState(() => isLoading = false);
+
+    } catch (e) { 
+      debugPrint('Ошибка инициализации слушателя: $e');
+      if (mounted) setState(() { schedule = []; isLoading = false; });
+    }
+  }
+
+  void _updateInternalSchedule(List<Map<String, dynamic>> newSchedule) {
+    if (!mounted) return;
+    
+    // Сохраняем в кэш
+    SharedPrefsService.setCachedSchedule(newSchedule);
+
+    setState(() {
+      schedule = newSchedule;
+      final lessonList = newSchedule.map((e) => Lesson.fromMap(e)).toList();
+      NotificationService.scheduleNotifications(lessonList);
+      _updateNow();
+      isLoading = false;
+    });
+
+    if (_timer == null) {
+      _timer = Timer.periodic(const Duration(seconds: 30), (_) => _updateNow());
+    }
   }
 
   String _getDayName(DateTime date) {
@@ -139,19 +173,25 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     return days[date.weekday - 1];
   }
 
-  String _normalizeTime(String t) {
-    if (!t.contains(':')) return t;
-    final parts = t.split(':');
-    return '${parts[0].padLeft(2, '0')}:${parts[1].padLeft(2, '0')}';
-  }
-
   void _updateNow() {
-    if (schedule.isEmpty) { setState(() { currentLesson = 'Пары нет'; nextLesson = '-'; remainingTime = null; }); return; }
+    if (!mounted) return;
+    
+    if (schedule.isEmpty) { 
+      setState(() { 
+        currentLesson = 'Пары нет'; 
+        nextLesson = '-'; 
+        remainingTime = null; 
+      }); 
+      return; 
+    }
+    
     final nowMin = TimeOfDay.now().hour * 60 + TimeOfDay.now().minute;
     bool found = false;
+    
     for (int i = 0; i < schedule.length; i++) {
       int start = _toMinutes(schedule[i]['start']);
       int end = _toMinutes(schedule[i]['end']);
+      
       if (nowMin >= start && nowMin < end) {
         setState(() {
           currentLesson = schedule[i]['name'];
@@ -162,15 +202,28 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         break;
       }
     }
+    
     if (!found) {
       final first = schedule.first;
       int firstStart = _toMinutes(first['start']);
-      if (nowMin < firstStart) { setState(() { currentLesson = 'Перемена'; nextLesson = first['name']; remainingTime = 'До начала: ${firstStart - nowMin} мин'; }); }
-      else { setState(() { currentLesson = 'Пары нет'; nextLesson = 'Занятия закончились'; remainingTime = null; }); }
+      if (nowMin < firstStart) { 
+        setState(() { 
+          currentLesson = 'Перемена'; 
+          nextLesson = first['name']; 
+          remainingTime = 'До начала: ${firstStart - nowMin} мин'; 
+        }); 
+      } else { 
+        setState(() { 
+          currentLesson = 'Пары нет'; 
+          nextLesson = 'Занятия закончились'; 
+          remainingTime = null; 
+        }); 
+      }
     }
   }
 
   int _toMinutes(String t) {
+    if (t == null || t.isEmpty || !t.contains(':')) return 0;
     final parts = t.split(':');
     return (int.tryParse(parts[0]) ?? 0) * 60 + (int.tryParse(parts[1]) ?? 0);
   }
@@ -224,10 +277,24 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     return Scaffold(
       drawer: const AppDrawer(),
       extendBodyBehindAppBar: true,
-      appBar: AppBar(title: const Text('ZvonOK', style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: 1.5)), backgroundColor: Colors.transparent, elevation: 0, centerTitle: true, actions: [_buildUserAvatar(context), const SizedBox(width: 16)]),
+      appBar: AppBar(
+        title: const Text('ZvonOK', style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: 1.5)), 
+        backgroundColor: Colors.transparent, 
+        elevation: 0, 
+        centerTitle: true, 
+        actions: [_buildUserAvatar(context), const SizedBox(width: 16)]
+      ),
       body: Stack(
         children: [
-          Container(decoration: BoxDecoration(gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: isDark ? [const Color(0xFF0F2027), const Color(0xFF203A43)] : [const Color(0xFFF0F2F5), const Color(0xFFE0EAFC)]))),
+          Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft, 
+                end: Alignment.bottomRight, 
+                colors: isDark ? [const Color(0xFF0F2027), const Color(0xFF203A43)] : [const Color(0xFFF0F2F5), const Color(0xFFE0EAFC)]
+              )
+            )
+          ),
           Positioned(
             top: 100, right: -50,
             child: ImageFiltered(
@@ -235,7 +302,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
               child: Container(width: 200, height: 200, decoration: BoxDecoration(shape: BoxShape.circle, color: primaryColor.withOpacity(0.15))),
             ),
           ),
-          if (isLoading) const Center(child: CircularProgressIndicator())
+          if (isLoading && schedule.isEmpty) const Center(child: CircularProgressIndicator())
           else if (isPending) _buildPendingScreen()
           else _buildMainContent(isDark, user),
         ],
@@ -257,7 +324,11 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
             const SizedBox(height: 12),
             const Text('Ваша заявка на вступление в группу находится на рассмотрении у куратора. Пожалуйста, подождите.', textAlign: TextAlign.center, style: TextStyle(color: Colors.white54, height: 1.5)),
             const SizedBox(height: 40),
-            ElevatedButton(onPressed: _cancelRequest, style: ElevatedButton.styleFrom(backgroundColor: Colors.white10, foregroundColor: Colors.redAccent, padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), child: const Text('Отменить заявку')),
+            ElevatedButton(
+              onPressed: _cancelRequest, 
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.white10, foregroundColor: Colors.redAccent, padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), 
+              child: const Text('Отменить заявку')
+            ),
           ],
         ),
       ),
@@ -265,25 +336,55 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   }
 
   Widget _buildMainContent(bool isDark, User? user) {
+    if (schedule.isEmpty && !isLoading) {
+      return _buildEmptyScheduleScreen(isDark);
+    }
+
     return SafeArea(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
+      child: RefreshIndicator(
+        onRefresh: () => _loadData(showLoader: true),
+        child: SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            children: [
+              const SizedBox(height: 10),
+              _buildHeader(isDark, user),
+              const SizedBox(height: 20),
+              _buildSystemAnnouncement(),
+              _buildSummaryRow(),
+              const SizedBox(height: 30),
+              Text(_formatTime(TimeOfDay.now()), style: const TextStyle(fontSize: 72, fontWeight: FontWeight.w200, letterSpacing: -2)),
+              _buildLessonDots(),
+              const SizedBox(height: 40),
+              _buildCurrentLessonCard(),
+              const SizedBox(height: 24),
+              _buildRemainingLessonsList(),
+              const SizedBox(height: 24),
+              _buildQuickNote(),
+              const SizedBox(height: 40),
+              _buildFullScheduleButton(),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmptyScheduleScreen(bool isDark) {
+    final primaryColor = Theme.of(context).colorScheme.primary;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(40.0),
         child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const SizedBox(height: 10),
-            _buildHeader(isDark, user),
-            const SizedBox(height: 20),
-            _buildSystemAnnouncement(),
-            _buildSummaryRow(),
-            const SizedBox(height: 30),
-            Text(_formatTime(TimeOfDay.now()), style: const TextStyle(fontSize: 72, fontWeight: FontWeight.w200, letterSpacing: -2)),
-            _buildLessonDots(),
-            const SizedBox(height: 40),
-            _buildCurrentLessonCard(),
+            Icon(Icons.event_busy_rounded, size: 80, color: primaryColor.withOpacity(0.3)),
             const SizedBox(height: 24),
-            _buildRemainingLessonsList(),
-            const SizedBox(height: 24),
-            _buildQuickNote(),
+            const Text('Расписание пусто', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 12),
+            const Text('На сегодня пар не добавлено. Если вы учитесь самостоятельно, добавьте их в полном расписании.', 
+              textAlign: TextAlign.center, style: TextStyle(color: Colors.white54, height: 1.5)),
             const SizedBox(height: 40),
             _buildFullScheduleButton(),
           ],
@@ -328,15 +429,43 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 
   Widget _buildFullScheduleButton() {
     final primaryColor = Theme.of(context).colorScheme.primary;
-    return SizedBox(width: double.infinity, child: ElevatedButton(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => BellSchedulePage(place: widget.place))), style: ElevatedButton.styleFrom(backgroundColor: primaryColor, foregroundColor: Colors.black, padding: const EdgeInsets.symmetric(vertical: 20), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)), elevation: 10), child: const Text('Открыть всё расписание', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold))));
+    return SizedBox(
+      width: double.infinity, 
+      child: ElevatedButton(
+        onPressed: () async {
+          await Navigator.push(context, MaterialPageRoute(builder: (_) => BellSchedulePage(place: widget.place)));
+          _loadData(showLoader: false); // Перезагружаем настройки БЕЗ блокирующего экрана
+        }, 
+        style: ElevatedButton.styleFrom(backgroundColor: primaryColor, foregroundColor: Colors.black, padding: const EdgeInsets.symmetric(vertical: 20), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)), elevation: 10), 
+        child: const Text('Открыть всё расписание', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold))
+      )
+    );
   }
 
   Widget _buildUserAvatar(BuildContext context) {
-    final user = FirebaseAuth.instance.currentUser;
-    return GestureDetector(onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProfilePage())), child: CircleAvatar(radius: 20, backgroundColor: Colors.white10, backgroundImage: user?.photoURL != null ? NetworkImage(user!.photoURL!) : null, child: user?.photoURL == null ? const Icon(Icons.person, color: Colors.white70) : null));
+    return GestureDetector(
+      onTap: () async {
+        await Navigator.push(context, MaterialPageRoute(builder: (_) => const ProfilePage()));
+        _loadData(showLoader: false);
+      },
+      child: StreamBuilder<User?>(
+        stream: FirebaseAuth.instance.authStateChanges(),
+        builder: (context, snapshot) {
+          final user = snapshot.data;
+          return CircleAvatar(
+            radius: 20, 
+            backgroundColor: Colors.white10, 
+            backgroundImage: user?.photoURL != null ? NetworkImage(user!.photoURL!) : null, 
+            child: user?.photoURL == null ? const Icon(Icons.person, color: Colors.white70) : null
+          );
+        }
+      )
+    );
   }
 
-  String _formatTime(TimeOfDay time) { return '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}'; }
+  String _formatTime(TimeOfDay time) { 
+    return '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}'; 
+  }
 
   double _getLessonProgress() {
     if (currentLesson == null || currentLesson == 'Пары нет' || currentLesson == 'Перемена') return 0.0;
@@ -353,7 +482,14 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     final nowMin = TimeOfDay.now().hour * 60 + TimeOfDay.now().minute;
     final remainingCount = schedule.where((e) => _toMinutes(e['start']) > nowMin).length;
     final endTime = schedule.isNotEmpty ? schedule.last['end'] : '--:--';
-    return Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [_buildSummaryItem(Icons.book_outlined, "$remainingCount", "Осталось"), _buildSummaryItem(Icons.flag_outlined, endTime, "Финиш"), _buildSummaryItem(Icons.timer_outlined, schedule.isEmpty ? "0" : "${schedule.length}", "Всего")]);
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceAround, 
+      children: [
+        _buildSummaryItem(Icons.book_outlined, "$remainingCount", "Осталось"), 
+        _buildSummaryItem(Icons.flag_outlined, endTime, "Финиш"), 
+        _buildSummaryItem(Icons.timer_outlined, schedule.isEmpty ? "0" : "${schedule.length}", "Всего")
+      ]
+    );
   }
 
   Widget _buildSummaryItem(IconData icon, String value, String label) {
@@ -366,7 +502,13 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     final remaining = schedule.where((e) => _toMinutes(e['start']) > nowMin).toList();
     final primaryColor = Theme.of(context).colorScheme.primary;
     if (remaining.isEmpty) return const SizedBox.shrink();
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [const Padding(padding: EdgeInsets.symmetric(horizontal: 4, vertical: 12), child: Text('ПЛАН НА СЕГОДНЯ', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.2, color: Colors.white54))), SizedBox(height: 110, child: ListView.builder(scrollDirection: Axis.horizontal, physics: const BouncingScrollPhysics(), itemCount: remaining.length, itemBuilder: (context, index) { return Container(width: 160, margin: const EdgeInsets.only(right: 12), child: _buildGlassCard(opacity: 0.03, blur: 10, child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [Text(remaining[index]['start'], style: TextStyle(fontSize: 12, color: primaryColor, fontWeight: FontWeight.bold)), const SizedBox(height: 4), Text(remaining[index]['name'], maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600))]))); }))]);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start, 
+      children: [
+        const Padding(padding: EdgeInsets.symmetric(horizontal: 4, vertical: 12), child: Text('ПЛАН НА СЕГОДНЯ', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.2, color: Colors.white54))), 
+        SizedBox(height: 110, child: ListView.builder(scrollDirection: Axis.horizontal, physics: const BouncingScrollPhysics(), itemCount: remaining.length, itemBuilder: (context, index) { return Container(width: 160, margin: const EdgeInsets.only(right: 12), child: _buildGlassCard(opacity: 0.03, blur: 10, child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [Text(remaining[index]['start'], style: TextStyle(fontSize: 12, color: primaryColor, fontWeight: FontWeight.bold)), const SizedBox(height: 4), Text(remaining[index]['name'], maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600))]))); }))
+      ]
+    );
   }
 
   Widget _buildQuickNote() {
@@ -376,11 +518,17 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 
   Widget _buildSystemAnnouncement() {
     final primaryColor = Theme.of(context).colorScheme.primary;
-    return StreamBuilder<DocumentSnapshot>(stream: FirebaseFirestore.instance.collection('system').doc('announcement').snapshots(), builder: (context, snapshot) {
-      if (!snapshot.hasData) return const SizedBox.shrink();
-      final data = snapshot.data!.data() as Map<String, dynamic>?;
-      if (data == null || data['active'] == false) return const SizedBox.shrink();
-      return Padding(padding: const EdgeInsets.only(bottom: 20), child: _buildGlassCard(opacity: 0.1, child: Row(children: [Icon(Icons.campaign_rounded, color: primaryColor, size: 28), const SizedBox(width: 16), Expanded(child: Text(data['text'] ?? '', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)))])));
-    });
+    return StreamBuilder<DocumentSnapshot>(
+      stream: FirebaseFirestore.instance.collection('system').doc('announcement').snapshots(), 
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) return const SizedBox.shrink();
+        final data = snapshot.data!.data() as Map<String, dynamic>?;
+        if (data == null || data['active'] == false) return const SizedBox.shrink();
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 20), 
+          child: _buildGlassCard(opacity: 0.1, child: Row(children: [Icon(Icons.campaign_rounded, color: primaryColor, size: 28), const SizedBox(width: 16), Expanded(child: Text(data['text'] ?? '', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)))]))
+        );
+      }
+    );
   }
 }

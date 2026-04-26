@@ -1,26 +1,25 @@
 // lib/screens/setup/place_selection_page.dart
 import 'package:flutter/material.dart';
 import 'dart:ui';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'schedule_mode_selection_page.dart';
 import 'app_mode_selection_page.dart';
+import '../../services/shared_prefs_service.dart';
+import '../../services/database_service.dart';
 
 class PlaceSelectionPage extends StatelessWidget {
   const PlaceSelectionPage({super.key});
 
   Future<void> _savePlaceAndOpen(BuildContext context, String place) async {
-    final user = FirebaseAuth.instance.currentUser;
+    final user = databaseService.user;
     if (user != null) {
-      // СОХРАНЯЕМ В ОБЛАКО (Firestore)
-      await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+      await databaseService.updateUserData({
         'institutionId': place,
-      }, SetOptions(merge: true));
+      });
     }
 
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('selected_place', place);
+    await SharedPrefsService.setPlace(place);
     
     if (context.mounted) {
       Navigator.pushReplacement(

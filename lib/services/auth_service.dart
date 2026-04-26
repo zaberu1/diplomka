@@ -12,7 +12,6 @@ class AuthService {
       password: password.trim(),
     );
     
-    // ПРИНУДИТЕЛЬНОЕ ОБНОВЛЕНИЕ РОЛИ ДЛЯ АДМИНА ПРИ ВХОДЕ
     if (result.user != null && email.trim() == 'admin@zvonok.ru') {
       await _db.collection('users').doc(result.user!.uid).set({
         'email': email.trim(),
@@ -39,6 +38,36 @@ class AuthService {
     return result.user;
   }
 
+  Future<User?> signInAnonymously() async {
+    final result = await _auth.signInAnonymously();
+    if (result.user != null) {
+      await _db.collection('users').doc(result.user!.uid).set({
+        'role': 'student',
+        'isAnonymous': true,
+        'createdAt': FieldValue.serverTimestamp(),
+        'setupCompleted': false,
+        'appMode': 'manual', 
+      }, SetOptions(merge: true));
+    }
+    return result.user;
+  }
+
+  Future<void> linkAnonymousWithEmail(String email, String password) async {
+    final user = _auth.currentUser;
+    if (user == null) throw 'Пользователь не найден';
+
+    AuthCredential credential = EmailAuthProvider.credential(email: email, password: password);
+    
+    // Привязываем почту к анонимному аккаунту
+    await user.linkWithCredential(credential);
+    
+    // Обновляем данные в Firestore
+    await _db.collection('users').doc(user.uid).update({
+      'email': email,
+      'isAnonymous': false,
+    });
+  }
+
   Future<void> signOut() async {
     await _auth.signOut();
   }
@@ -46,3 +75,5 @@ class AuthService {
   User? get currentUser => _auth.currentUser;
   Stream<User?> get authStateChanges => _auth.authStateChanges();
 }
+
+final authService = AuthService();

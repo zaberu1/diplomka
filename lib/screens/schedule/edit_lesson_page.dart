@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'dart:ui';
 import '../../models/lesson_model.dart';
 import '../../utils/constants.dart';
+import '../../services/shared_prefs_service.dart';
 
 class EditLessonPage extends StatefulWidget {
   final String name;
@@ -52,20 +53,26 @@ class _EditLessonPageState extends State<EditLessonPage> {
       minute: int.tryParse(parts[1]) ?? 0,
     );
 
+    // Получаем настройку формата времени
+    final bool use24h = SharedPrefsService.getUse24HourFormat();
+
     final picked = await showTimePicker(
       context: context,
       initialTime: initialTime,
       builder: (context, child) {
         final isDark = Theme.of(context).brightness == Brightness.dark;
-        return Theme(
-          data: Theme.of(context).copyWith(
-            timePickerTheme: TimePickerThemeData(
-              backgroundColor: isDark ? const Color(0xFF1A1C2C) : Colors.white,
-              dialHandColor: Colors.amber,
-              hourMinuteTextColor: isDark ? Colors.white : Colors.black,
+        return MediaQuery(
+          data: MediaQuery.of(context).copyWith(alwaysUse24HourFormat: use24h),
+          child: Theme(
+            data: Theme.of(context).copyWith(
+              timePickerTheme: TimePickerThemeData(
+                backgroundColor: isDark ? const Color(0xFF1A1C2C) : Colors.white,
+                dialHandColor: Colors.amber,
+                hourMinuteTextColor: isDark ? Colors.white : Colors.black,
+              ),
             ),
+            child: child!,
           ),
-          child: child!,
         );
       },
     );

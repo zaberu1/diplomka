@@ -6,18 +6,25 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'place_selection_page.dart';
 import 'join_institution_page.dart';
+import '../auth/auth_page.dart';
 
 class AppModeSelectionPage extends StatelessWidget {
   const AppModeSelectionPage({super.key});
 
   Future<void> _setMode(BuildContext context, String mode) async {
     final user = FirebaseAuth.instance.currentUser;
-    if (user != null) {
-      // Сохраняем в Firestore
-      await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
-        'appMode': mode,
-      }, SetOptions(merge: true));
+    if (user == null) return;
+
+    // ЕСЛИ ПОЛЬЗОВАТЕЛЬ АНОНИМНЫЙ И ХОЧЕТ "ПРИСОЕДИНИТЬСЯ"
+    if (user.isAnonymous && mode == 'join') {
+      _showRegistrationDialog(context);
+      return;
     }
+
+    // Сохраняем в Firestore
+    await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+      'appMode': mode,
+    }, SetOptions(merge: true));
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('app_operating_mode', mode);
@@ -26,10 +33,35 @@ class AppModeSelectionPage extends StatelessWidget {
       if (mode == 'manual') {
         Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const PlaceSelectionPage()));
       } else {
-        // ТЕПЕРЬ ПЕРЕХОДИМ НА РЕАЛЬНУЮ СТРАНИЦУ ВЫБОРА
         Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const JoinInstitutionPage()));
       }
     }
+  }
+
+  void _showRegistrationDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1C2C),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: const Text('Нужна регистрация', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        content: const Text('Чтобы присоединиться к заведению и синхронизироваться с группой, создайте постоянный аккаунт.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Отмена', style: TextStyle(color: Colors.white38)),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              Navigator.push(context, MaterialPageRoute(builder: (_) => const AuthPage()));
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.amber),
+            child: const Text('Зарегистрироваться', style: TextStyle(color: Colors.black)),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildModeButton(

@@ -2,20 +2,22 @@
 import 'package:flutter/material.dart';
 import 'dart:ui';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../screens/schedule/home_page.dart';
 import '../screens/schedule/bell_schedule_page.dart';
 import '../screens/settings/settings_page.dart';
 import '../screens/settings/history_page.dart';
-import '../screens/settings/statistics_page.dart';
 import '../screens/auth/auth_page.dart';
 import '../screens/profile/profile_page.dart';
 import '../screens/setup/join_institution_page.dart';
 import '../screens/admin/admin_dashboard.dart';
 import '../screens/teacher/teacher_dashboard.dart';
 import '../screens/onboarding/welcome_page.dart';
+import '../screens/setup/place_selection_page.dart';
+import '../services/shared_prefs_service.dart';
+import '../services/database_service.dart';
+import '../services/auth_service.dart';
 
 class AppDrawer extends StatelessWidget {
   const AppDrawer({super.key});
@@ -88,23 +90,28 @@ class AppDrawer extends StatelessWidget {
         backgroundColor: const Color(0xFF1A1C2C),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
         title: const Text('Вернуться в ручной режим?', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-        content: const Text('Вы отключитесь от группы. Ваши личные настройки расписания снова станут основными.'),
+        content: const Text('Вы отключитесь от группы. Вам потребуется заново выбрать место обучения и настроить расписание.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена', style: TextStyle(color: Colors.white38))),
           ElevatedButton(
             onPressed: () async {
-              final user = FirebaseAuth.instance.currentUser;
-              if (user != null) {
-                await FirebaseFirestore.instance.collection('users').doc(user.uid).update({
-                  'appMode': 'manual',
-                  'institutionId': null,
-                  'institutionName': null,
-                  'groupId': null,
-                  'setupCompleted': false,
-                  'pendingRequest': false,
-                });
+              await databaseService.updateUserData({
+                'appMode': 'manual',
+                'institutionId': null,
+                'institutionName': null,
+                'groupId': null,
+                'setupCompleted': false,
+                'pendingRequest': false,
+              });
+              
+              if (context.mounted) { 
+                Navigator.pop(context); // Закрыть диалог
+                Navigator.pushAndRemoveUntil(
+                  context, 
+                  MaterialPageRoute(builder: (_) => const PlaceSelectionPage()),
+                  (route) => false,
+                );
               }
-              if (context.mounted) { Navigator.pop(context); Navigator.pop(context); }
             },
             style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent.withOpacity(0.8)),
             child: const Text('Отключиться'),
@@ -114,23 +121,173 @@ class AppDrawer extends StatelessWidget {
     );
   }
 
-  void _showJoinDialog(BuildContext context) {
-    final primaryColor = Theme.of(context).colorScheme.primary;
+  void _showFinishRegistrationDialog(BuildContext context) {
+    final emailCtrl = TextEditingController();
+    final passCtrl = TextEditingController();
+    final confirmPassCtrl = TextEditingController();
+    bool isLoading = false;
+    bool obscure = true;
+
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1C2C),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-        title: const Text('Подключить заведение', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-        content: const Text('Вы сможете выбрать свою группу и получать готовое расписание автоматически.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена', style: TextStyle(color: Colors.white38))),
-          ElevatedButton(
-            onPressed: () { Navigator.pop(context); Navigator.pop(context); Navigator.push(context, MaterialPageRoute(builder: (_) => const JoinInstitutionPage())); },
-            style: ElevatedButton.styleFrom(backgroundColor: primaryColor, foregroundColor: Colors.black),
-            child: const Text('Перейти'),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 20),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(32),
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+              child: Container(
+                padding: const EdgeInsets.all(28),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1A1C2C).withOpacity(0.9),
+                  borderRadius: BorderRadius.circular(32),
+                  border: Border.all(color: Colors.white.withOpacity(0.1)),
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: Colors.amber.withOpacity(0.1),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(Icons.verified_user_rounded, color: Colors.amber, size: 40),
+                      ),
+                      const SizedBox(height: 20),
+                      const Text('Создать аккаунт', style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'Привяжите почту, чтобы синхронизировать данные и получить доступ к функциям заведения.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.white54, fontSize: 14, height: 1.4),
+                      ),
+                      const SizedBox(height: 24),
+                      _buildDialogField(
+                        controller: emailCtrl,
+                        label: 'Email',
+                        icon: Icons.email_outlined,
+                      ),
+                      const SizedBox(height: 16),
+                      _buildDialogField(
+                        controller: passCtrl,
+                        label: 'Пароль',
+                        icon: Icons.lock_outline_rounded,
+                        obscureText: obscure,
+                      ),
+                      const SizedBox(height: 16),
+                      _buildDialogField(
+                        controller: confirmPassCtrl,
+                        label: 'Подтвердите пароль',
+                        icon: Icons.lock_reset_rounded,
+                        obscureText: obscure,
+                        suffix: IconButton(
+                          icon: Icon(obscure ? Icons.visibility_off : Icons.visibility, color: Colors.white24, size: 20),
+                          onPressed: () => setDialogState(() => obscure = !obscure),
+                        ),
+                      ),
+                      const SizedBox(height: 32),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextButton(
+                              onPressed: () => Navigator.pop(context),
+                              child: const Text('ПОЗЖЕ', style: TextStyle(color: Colors.white38, fontWeight: FontWeight.bold, letterSpacing: 1)),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            flex: 2,
+                            child: ElevatedButton(
+                              onPressed: isLoading ? null : () async {
+                                final email = emailCtrl.text.trim();
+                                final pass = passCtrl.text.trim();
+                                final confirm = confirmPassCtrl.text.trim();
+
+                                if (email.isEmpty || pass.isEmpty) {
+                                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Заполните все поля')));
+                                  return;
+                                }
+                                if (pass != confirm) {
+                                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Пароли не совпадают')));
+                                  return;
+                                }
+
+                                setDialogState(() => isLoading = true);
+                                try {
+                                  await authService.linkAnonymousWithEmail(email, pass);
+                                  if (context.mounted) {
+                                    Navigator.pop(context);
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text('Успешно! Теперь у вас полноценный аккаунт'),
+                                        backgroundColor: Colors.green,
+                                        behavior: SnackBarBehavior.floating,
+                                      ),
+                                    );
+                                  }
+                                } catch (e) {
+                                  setDialogState(() => isLoading = false);
+                                  if (context.mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(content: Text('Ошибка: $e'), backgroundColor: Colors.redAccent),
+                                    );
+                                  }
+                                }
+                              },
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.amber,
+                                foregroundColor: Colors.black,
+                                padding: const EdgeInsets.symmetric(vertical: 16),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                elevation: 0,
+                              ),
+                              child: isLoading 
+                                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation(Colors.black)))
+                                : const Text('СОХРАНИТЬ', style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 1)),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           ),
-        ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDialogField({
+    required TextEditingController controller,
+    required String label,
+    required IconData icon,
+    bool obscureText = false,
+    Widget? suffix,
+  }) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.05),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withOpacity(0.1)),
+      ),
+      child: TextField(
+        controller: controller,
+        obscureText: obscureText,
+        style: const TextStyle(color: Colors.white, fontSize: 16),
+        decoration: InputDecoration(
+          labelText: label,
+          labelStyle: const TextStyle(color: Colors.white38, fontSize: 14),
+          prefixIcon: Icon(icon, color: Colors.amber, size: 20),
+          suffixIcon: suffix,
+          border: InputBorder.none,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        ),
       ),
     );
   }
@@ -138,7 +295,6 @@ class AppDrawer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final user = FirebaseAuth.instance.currentUser;
     final primaryColor = Theme.of(context).colorScheme.primary;
 
     return Drawer(
@@ -159,17 +315,18 @@ class AppDrawer extends StatelessWidget {
           ),
           SafeArea(
             child: StreamBuilder<DocumentSnapshot>(
-              stream: FirebaseFirestore.instance.collection('users').doc(user?.uid).snapshots(),
+              stream: databaseService.getUserStream(),
               builder: (context, snapshot) {
                 final userData = snapshot.data?.data() as Map<String, dynamic>? ?? {};
                 final role = userData['role'] ?? 'student';
                 final appMode = userData['appMode'] ?? 'manual';
                 final bool isPending = userData['pendingRequest'] == true;
                 final bool isOfficiallyInGroup = appMode == 'join' && !isPending;
+                final bool isAnonymous = userData['isAnonymous'] == true;
 
                 return Column(
                   children: [
-                    _buildDrawerHeader(context, user, role, isDark, userData),
+                    _buildDrawerHeader(context, role, primaryColor, userData, isAnonymous),
                     const SizedBox(height: 10),
 
                     Expanded(
@@ -177,16 +334,12 @@ class AppDrawer extends StatelessWidget {
                         padding: const EdgeInsets.symmetric(horizontal: 12),
                         child: ListView(
                           physics: const BouncingScrollPhysics(),
-                          children: role == 'admin' 
-                            ? _buildAdminItems(context)
-                            : role == 'teacher'
-                                ? _buildTeacherItems(context)
-                                : _buildUserItems(context, isOfficiallyInGroup, isPending, userData),
+                          children: _buildItemsByRole(context, role, isOfficiallyInGroup, isPending, userData, isAnonymous),
                         ),
                       ),
                     ),
 
-                    if (role == 'student')
+                    if (role == 'student' && !isAnonymous)
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 16),
                         child: Column(
@@ -200,8 +353,8 @@ class AppDrawer extends StatelessWidget {
                                 color: primaryColor, 
                                 onTap: () {
                                   Navigator.pop(context);
-                                  final prefs = SharedPreferences.getInstance();
-                                  prefs.then((p) => Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomePage(place: p.getString('selected_place') ?? 'school'))));
+                                  final place = SharedPrefsService.getPlace();
+                                  Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomePage(place: place)));
                                 }
                               )
                             else if (isOfficiallyInGroup) ...[
@@ -214,6 +367,30 @@ class AppDrawer extends StatelessWidget {
                               }),
                             ],
                           ],
+                        ),
+                      ),
+                      
+                    if (isAnonymous)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [Colors.amber.withOpacity(0.2), Colors.orange.withOpacity(0.1)],
+                            ),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: Colors.amber.withOpacity(0.3)),
+                          ),
+                          child: _buildDrawerItem(
+                            context, 
+                            icon: Icons.auto_awesome_rounded, 
+                            label: 'Создать аккаунт', 
+                            color: Colors.amber, 
+                            onTap: () {
+                              Navigator.pop(context);
+                              _showFinishRegistrationDialog(context);
+                            }
+                          ),
                         ),
                       ),
 
@@ -229,6 +406,14 @@ class AppDrawer extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  List<Widget> _buildItemsByRole(BuildContext context, String role, bool isJoined, bool isPending, Map<String, dynamic> userData, bool isAnonymous) {
+    switch (role) {
+      case 'admin': return _buildAdminItems(context);
+      case 'teacher': return _buildTeacherItems(context);
+      default: return _buildUserItems(context, isJoined, isPending, isAnonymous);
+    }
   }
 
   List<Widget> _buildAdminItems(BuildContext context) {
@@ -253,22 +438,20 @@ class AppDrawer extends StatelessWidget {
     ];
   }
 
-  List<Widget> _buildUserItems(BuildContext context, bool isJoined, bool isPending, Map<String, dynamic> userData) {
+  List<Widget> _buildUserItems(BuildContext context, bool isJoined, bool isPending, bool isAnonymous) {
     return [
-      _buildDrawerItem(context, icon: Icons.home_rounded, label: 'Главная', onTap: () async {
-        final prefs = await SharedPreferences.getInstance();
-        final place = prefs.getString('selected_place') ?? 'school';
-        if (context.mounted) Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomePage(place: place)));
+      _buildDrawerItem(context, icon: Icons.home_rounded, label: 'Главная', onTap: () {
+        final place = SharedPrefsService.getPlace();
+        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomePage(place: place)));
       }),
-      _buildDrawerItem(context, icon: Icons.person_outline_rounded, label: 'Мой профиль', onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProfilePage()))),
+      if (!isAnonymous)
+        _buildDrawerItem(context, icon: Icons.person_outline_rounded, label: 'Мой профиль', onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProfilePage()))),
       if (!isPending) ...[
-        _buildDrawerItem(context, icon: Icons.calendar_today_rounded, label: 'Расписание', onTap: () async {
-          final prefs = await SharedPreferences.getInstance();
-          final place = prefs.getString('selected_place') ?? 'school';
-          if (context.mounted) Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => BellSchedulePage(place: place)));
+        _buildDrawerItem(context, icon: Icons.calendar_today_rounded, label: 'Расписание', onTap: () {
+          final place = SharedPrefsService.getPlace();
+          Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => BellSchedulePage(place: place)));
         }),
-        if (!isJoined) ...[
-          _buildDrawerItem(context, icon: Icons.bar_chart_rounded, label: 'Статистика', onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const StatisticsPage()))),
+        if (!isJoined && !isAnonymous) ...[
           _buildDrawerItem(context, icon: Icons.history_edu_rounded, label: 'История', onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HistoryPage()))),
         ],
       ],
@@ -281,9 +464,10 @@ class AppDrawer extends StatelessWidget {
     return ListTile(
       onTap: () async {
         await FirebaseAuth.instance.signOut();
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.remove('selected_place');
-        if (context.mounted) Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (_) => const AuthPage()), (route) => false);
+        await SharedPrefsService.clearAll(); // Очистка при выходе
+        if (context.mounted) {
+          Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (_) => const AuthPage()), (route) => false);
+        }
       },
       leading: const Icon(Icons.power_settings_new_rounded, color: Colors.redAccent),
       title: const Text('Выйти', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
@@ -291,11 +475,15 @@ class AppDrawer extends StatelessWidget {
     );
   }
 
-  Widget _buildDrawerHeader(BuildContext context, User? user, String role, bool isDark, Map<String, dynamic> userData) {
-    final String name = userData['displayName'] ?? user?.displayName ?? (role == 'admin' ? 'Админ' : 'Студент');
-    final primaryColor = Theme.of(context).colorScheme.primary;
+  Widget _buildDrawerHeader(BuildContext context, String role, Color primaryColor, Map<String, dynamic> userData, bool isAnonymous) {
+    final user = databaseService.user;
+    final String name = isAnonymous ? 'Гость' : (userData['displayName'] ?? user?.displayName ?? (role == 'admin' ? 'Админ' : 'Студент'));
+    
     return GestureDetector(
-      onTap: () { Navigator.pop(context); Navigator.push(context, MaterialPageRoute(builder: (_) => const ProfilePage())); },
+      onTap: isAnonymous ? null : () { 
+        Navigator.pop(context); 
+        Navigator.push(context, MaterialPageRoute(builder: (_) => const ProfilePage())); 
+      },
       child: Container(
         padding: const EdgeInsets.all(24),
         child: Row(
@@ -304,7 +492,7 @@ class AppDrawer extends StatelessWidget {
               radius: 30,
               backgroundColor: Colors.white10,
               backgroundImage: user?.photoURL != null ? NetworkImage(user!.photoURL!) : null,
-              child: user?.photoURL == null ? Icon(Icons.person, size: 30, color: primaryColor) : null,
+              child: user?.photoURL == null ? Icon(isAnonymous ? Icons.person_outline : Icons.person, size: 30, color: primaryColor) : null,
             ),
             const SizedBox(width: 16),
             Expanded(
@@ -312,7 +500,7 @@ class AppDrawer extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(name, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white), maxLines: 1, overflow: TextOverflow.ellipsis),
-                  Text(user?.email ?? '', style: const TextStyle(fontSize: 11, color: Colors.white54), maxLines: 1, overflow: TextOverflow.ellipsis),
+                  Text(isAnonymous ? 'Временный аккаунт' : (user?.email ?? ''), style: const TextStyle(fontSize: 11, color: Colors.white54), maxLines: 1, overflow: TextOverflow.ellipsis),
                 ],
               ),
             ),

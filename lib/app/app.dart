@@ -1,6 +1,5 @@
 // lib/app/app.dart
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'theme_controller.dart';
@@ -18,6 +17,7 @@ import '../screens/setup/schedule_mode_selection_page.dart';
 import '../screens/setup/join_institution_page.dart';
 import '../screens/admin/admin_dashboard.dart';
 import '../screens/teacher/teacher_dashboard.dart';
+import '../services/shared_prefs_service.dart';
 
 class ZvonOKApp extends StatefulWidget {
   const ZvonOKApp({super.key});
@@ -30,7 +30,7 @@ class _ZvonOKAppState extends State<ZvonOKApp> {
   @override
   void initState() {
     super.initState();
-    themeController.loadSettings(); // Загружаем сохраненную тему и цвет
+    themeController.loadSettings();
   }
 
   @override
@@ -56,54 +56,7 @@ class _ZvonOKAppState extends State<ZvonOKApp> {
               brightness: Brightness.dark,
             ),
           ),
-          home: StreamBuilder<User?>(
-            stream: FirebaseAuth.instance.authStateChanges(),
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) return const SplashScreen();
-              final user = snapshot.data;
-
-              if (user != null) {
-                return StreamBuilder<DocumentSnapshot>(
-                  stream: FirebaseFirestore.instance.collection('users').doc(user.uid).snapshots(),
-                  builder: (context, userSnapshot) {
-                    if (userSnapshot.connectionState == ConnectionState.waiting) return const SplashScreen();
-                    
-                    final userData = userSnapshot.data?.data() as Map<String, dynamic>?;
-                    if (userData == null) return const AuthPage();
-
-                    final role = userData['role'] ?? 'student';
-                    if (role == 'admin') return const AdminDashboard();
-                    if (role == 'teacher') return const TeacherDashboard();
-
-                    final String? mode = userData['appMode'];
-                    final String? instId = userData['institutionId'];
-                    final bool setupDone = userData['setupCompleted'] ?? false;
-
-                    if (mode == null) return const AppModeSelectionPage();
-                    
-                    if (mode == 'manual') {
-                      if (instId == null) return const PlaceSelectionPage();
-                      if (!setupDone) return const ScheduleModeSelectionPage();
-                      return HomePage(place: instId);
-                    } else {
-                      if (instId == null || !setupDone) return const JoinInstitutionPage();
-                      return HomePage(place: instId);
-                    }
-                  },
-                );
-              }
-
-              return FutureBuilder<SharedPreferences>(
-                future: SharedPreferences.getInstance(),
-                builder: (context, prefsSnapshot) {
-                  if (!prefsSnapshot.hasData) return const SplashScreen();
-                  final prefs = prefsSnapshot.data!;
-                  final welcomeCompleted = prefs.getBool('welcome_completed') ?? false;
-                  return welcomeCompleted ? const AuthPage() : const WelcomePage();
-                },
-              );
-            },
-          ),
+          home: const RootGate(),
           routes: {
             '/welcome': (context) => const WelcomePage(),
             '/auth': (context) => const AuthPage(),
@@ -118,6 +71,65 @@ class _ZvonOKAppState extends State<ZvonOKApp> {
             '/teacher': (context) => const TeacherDashboard(),
           },
         );
+      },
+    );
+  }
+}
+
+class RootGate extends StatelessWidget {
+  const RootGate({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<User?>(
+      stream: FirebaseAuth.instance.authStateChanges(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) return const SplashScreen();
+        final user = snapshot.data;
+
+        if (user != null) {
+          return StreamBuilder<DocumentSnapshot>(
+            stream: FirebaseFirestore.instance.collection('users').doc(user.uid).snapshots(),
+            builder: (context, userSnapshot) {
+              if (userSnapshot.connectionState == ConnectionState.waiting) return const SplashScreen();
+              
+              final userData = userSnapshot.data?.data() as Map<String, dynamic>?;
+              
+              // Если данных нет в Firestore, но юзер залогинился (например, анонимно), 
+              // мы должны создать для него базовый профиль, если он еще не создан.
+              if (userData == null) {
+                // Если почта админская - сразу в админку
+                if (user.email == 'admin@zvonok.ru') return const AdminDashboard();
+                
+                // Для всех остальных (включая анонимов) - идем на выбор режима
+                return const AppModeSelectionPage();
+              }
+
+              final role = userData['role'] ?? 'student';
+              if (role == 'admin') return const AdminDashboard();
+              if (role == 'teacher') return const TeacherDashboard();
+
+              // Логика обычного студента
+              final String? mode = userData['appMode'];
+              final String? instId = userData['institutionId'];
+              final bool setupDone = userData['setupCompleted'] ?? false;
+
+              if (mode == null) return const AppModeSelectionPage();
+              
+              if (mode == 'manual') {
+                if (instId == null) return const PlaceSelectionPage();
+                if (!setupDone) return const ScheduleModeSelectionPage();
+                return HomePage(place: instId);
+              } else {
+                if (instId == null || !setupDone) return const JoinInstitutionPage();
+                return HomePage(place: instId);
+              }
+            },
+          );
+        }
+
+        final welcomeCompleted = SharedPrefsService.getBool('welcome_completed') ?? false;
+        return welcomeCompleted ? const AuthPage() : const WelcomePage();
       },
     );
   }

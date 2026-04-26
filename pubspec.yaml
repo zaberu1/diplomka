@@ -21,10 +21,14 @@ dependencies:
   firebase_core: ^4.1.1
   firebase_auth: ^6.1.0
   cloud_firestore: ^6.0.2
-  firebase_storage: ^13.0.3 # ← ПРАВИЛЬНОЕ МЕСТО
+  firebase_storage: ^13.0.3
 
   # Image Picker
-  image_picker: ^1.0.4  # ← ПРАВИЛЬНОЕ МЕСТО
+  image_picker: ^1.0.4
+
+  # Уведомления (без лишних плагинов часовых поясов)
+  flutter_local_notifications: ^17.2.2
+  timezone: ^0.9.4
 
 dev_dependencies:
   flutter_test:
